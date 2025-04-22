@@ -76,7 +76,7 @@ class AttendanceProvider extends ChangeNotifier {
     }
   }
   
-  // Send attendance signal to students (new function)
+  // Send attendance signal (updated for BLE)
   Future<bool> sendAttendanceSignal(String sessionId) async {
     try {
       _isLoading = true;
@@ -95,12 +95,41 @@ class AttendanceProvider extends ChangeNotifier {
     }
   }
   
-  // Get student notifications (new function)
+  // Stop attendance signal (new method for BLE)
+  Future<bool> stopAttendanceSignal(String sessionId) async {
+    try {
+      _isLoading = true;
+      _error = null;
+      notifyListeners();
+      
+      await _attendanceService.stopAttendanceSignal(sessionId);
+      
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+  
+  // Check if a session has an active BLE signal
+  Future<bool> isSessionSignalActive(String sessionId) async {
+    try {
+      return await _attendanceService.isSessionSignalActive(sessionId);
+    } catch (e) {
+      _error = e.toString();
+      return false;
+    }
+  }
+  
+  // Get student notifications
   Stream<QuerySnapshot> getNotifications() {
     return _attendanceService.getNotifications();
   }
   
-  // Mark a notification as read (new function)
+  // Mark a notification as read
   Future<bool> markNotificationAsRead(String notificationId) async {
     try {
       await _attendanceService.markNotificationAsRead(notificationId);
@@ -116,17 +145,20 @@ class AttendanceProvider extends ChangeNotifier {
     required String sessionId,
     required String studentId,
     required String studentName,
+    bool bleVerified = false, // New parameter for BLE verification
   }) async {
     try {
       _isLoading = true;
       _error = null;
       notifyListeners();
       
+      // Add BLE verification parameter 
       await _attendanceService.markAttendance(
         sessionId: sessionId,
         studentId: studentId,
         studentName: studentName,
         verificationMethod: 'Manual',
+        bleVerified: bleVerified,
       );
       
       return true;
@@ -139,13 +171,14 @@ class AttendanceProvider extends ChangeNotifier {
     }
   }
   
-  // Mark attendance using face recognition
+  // Mark attendance using face recognition (updated with BLE verification)
   Future<bool> markAttendanceWithFaceRecognition({
     required String sessionId,
     required String studentId,
     required String studentName,
     required File imageFile,
     Map<String, dynamic>? verificationResult, // Add optional parameter to pass existing verification result
+    bool bleVerified = false, // Add BLE verification status
   }) async {
     try {
       _isLoading = true;
@@ -175,7 +208,7 @@ class AttendanceProvider extends ChangeNotifier {
       }
       
       if (comparisonResult['verification_match'] == true) {
-        // If faces match, mark attendance
+        // If faces match, mark attendance with BLE verification status
         await _attendanceService.markAttendance(
           sessionId: sessionId,
           studentId: studentId,
@@ -185,6 +218,7 @@ class AttendanceProvider extends ChangeNotifier {
             'confidence': comparisonResult['confidence'],
             'timestamp': DateTime.now().toIso8601String(),
           },
+          bleVerified: bleVerified, // Pass the BLE verification status
         );
         
         return true;

@@ -31,6 +31,12 @@ dependencies:
   image_picker: ^1.0.4
   http: ^1.1.0
   dio: ^5.3.2
+  
+  # BLE packages
+  flutter_blue_plus: ^1.14.11  # For BLE functionality
+  permission_handler: ^11.0.1  # For handling BLE and location permissions
+  crypto: ^3.0.3  # For token generation and encryption
+  uuid: ^4.2.1  # For generating unique identifiers
 
 dev_dependencies:
   flutter_test:

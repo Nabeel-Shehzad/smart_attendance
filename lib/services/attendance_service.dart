@@ -47,6 +47,8 @@ class AttendanceService {
       'signalTime': null, // Initialize signal time as null
       'lateThresholdMinutes': lateThresholdMinutes,
       'absentThresholdMinutes': absentThresholdMinutes,
+      'bleEnabled': true, // New field to indicate BLE-based attendance is enabled
+      'bleSignalActive': false, // Flag to track if BLE signal is currently active
     });
   }
 
@@ -75,11 +77,12 @@ class AttendanceService {
         .doc(sessionId)
         .update({
       'isActive': false,
+      'bleSignalActive': false, // Ensure BLE signal is also deactivated
       'updatedAt': FieldValue.serverTimestamp(),
     });
   }
 
-  // Send attendance signal to students
+  // Send attendance signal to students (with BLE support)
   Future<void> sendAttendanceSignal(String sessionId) async {
     // Record the signal time
     final now = DateTime.now();
@@ -88,22 +91,23 @@ class AttendanceService {
         .doc(sessionId)
         .update({
       'signalTime': Timestamp.fromDate(now),
+      'bleSignalActive': true, // Mark that BLE signal is now active
       'updatedAt': FieldValue.serverTimestamp(),
     });
-    
+
     // Get course ID for this session to send notifications
     final sessionDoc = await _firestore
         .collection('attendance_sessions')
         .doc(sessionId)
         .get();
-        
+
     if (sessionDoc.exists) {
       final sessionData = sessionDoc.data() as Map<String, dynamic>;
       final courseId = sessionData['courseId'] as String;
       final title = 'Attendance Required';
       final message = 'Your instructor has requested attendance for ${sessionData['title']}';
-      
-      // Create a notification in Firestore
+
+      // Create a notification in Firestore for fallback purposes
       await _firestore.collection('notifications').add({
         'type': 'attendance_signal',
         'courseId': courseId,
@@ -112,73 +116,99 @@ class AttendanceService {
         'message': message,
         'sentAt': Timestamp.fromDate(now),
         'read': false,
-        'targetRole': 'student'
+        'targetRole': 'student',
+        'isBleBased': true, // Mark this as BLE-based attendance
       });
-      
-      // Send actual push notifications to student devices
-      await _notificationService.sendAttendanceNotificationToCourse(
-        courseId,
-        sessionId,
-        title,
-        message
-      );
+
+      // Note: We won't send push notifications directly as we're using BLE now
+      // But we keep this record for UI updates and fallback purposes
     }
   }
 
-  // Mark attendance for a student
+  // Stop attendance signal (new method for BLE)
+  Future<void> stopAttendanceSignal(String sessionId) async {
+    await _firestore
+        .collection('attendance_sessions')
+        .doc(sessionId)
+        .update({
+      'bleSignalActive': false,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  // Check if a BLE signal is active for a session
+  Future<bool> isSessionSignalActive(String sessionId) async {
+    final doc = await _firestore
+        .collection('attendance_sessions')
+        .doc(sessionId)
+        .get();
+
+    if (!doc.exists) return false;
+
+    final data = doc.data() as Map<String, dynamic>;
+    return data['bleSignalActive'] == true;
+  }
+
+  // Mark attendance for a student (updated to accept BLE verification)
   Future<void> markAttendance({
     required String sessionId,
     required String studentId,
     required String studentName,
     String verificationMethod = 'Manual',
     Map<String, dynamic>? verificationData,
+    bool bleVerified = false, // New param to indicate BLE verification
   }) async {
     // Check if the session is active
     final sessionDoc = await _firestore
         .collection('attendance_sessions')
         .doc(sessionId)
         .get();
-    
+
     if (!sessionDoc.exists) {
       throw Exception('Attendance session not found');
     }
-    
+
     final sessionData = sessionDoc.data() as Map<String, dynamic>;
     if (!(sessionData['isActive'] as bool)) {
       throw Exception('Attendance session is not active');
     }
-    
+
+    // Check if BLE verification is required but not provided
+    final bleEnabled = sessionData['bleEnabled'] ?? false;
+    if (bleEnabled && !bleVerified && verificationMethod != 'Manual') {
+      throw Exception('BLE verification required for attendance');
+    }
+
     // Check if the student is already marked
     final attendees = List<Map<String, dynamic>>.from(sessionData['attendees'] ?? []);
     final alreadyMarked = attendees.any((attendee) => attendee['studentId'] == studentId);
-    
+
     if (alreadyMarked) {
       throw Exception('Student attendance already marked');
     }
-    
+
     // Get the late and absent thresholds from the session
     final lateThresholdMinutes = sessionData['lateThresholdMinutes'] ?? 15;
     final absentThresholdMinutes = sessionData['absentThresholdMinutes'] ?? 30;
-    
+
     // Determine attendance status based on signal time
     String status = 'present';
-    final signalTime = sessionData['signalTime'] != null 
-        ? (sessionData['signalTime'] as Timestamp).toDate() 
+    final signalTime = sessionData['signalTime'] != null
+        ? (sessionData['signalTime'] as Timestamp).toDate()
         : null;
-    
+
     if (signalTime != null) {
       final now = DateTime.now();
       final difference = now.difference(signalTime);
-      
+
       // Use the dynamic thresholds from the session
       if (difference.inMinutes > absentThresholdMinutes) {
         status = 'absent';
-      } 
-      else if (difference.inMinutes > lateThresholdMinutes) {
+      } else if (difference.inMinutes > lateThresholdMinutes) {
         status = 'late';
       }
     }
-    
+
     // Mark attendance
     await _firestore
         .collection('attendance_sessions')
@@ -191,6 +221,7 @@ class AttendanceService {
           'markedAt': Timestamp.now(),
           'verificationMethod': verificationMethod,
           'verificationData': verificationData,
+          'bleVerified': bleVerified, // Include BLE verification status
           'status': status, // Add attendance status
           'responseTime': Timestamp.now(),
         }
@@ -204,7 +235,7 @@ class AttendanceService {
     if (currentUserId == null) {
       throw Exception('User not authenticated');
     }
-    
+
     // First determine user's role
     return _firestore
         .collection('notifications')
@@ -212,7 +243,7 @@ class AttendanceService {
         .orderBy('sentAt', descending: true)
         .snapshots();
   }
-  
+
   // Mark notification as read
   Future<void> markNotificationAsRead(String notificationId) async {
     await _firestore

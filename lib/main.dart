@@ -18,6 +18,7 @@ import 'providers/course_provider.dart';
 import 'providers/attendance_provider.dart';
 import 'providers/face_recognition_provider.dart';
 import 'providers/notification_provider.dart';
+import 'providers/ble_provider.dart';  // Added BLE provider
 
 // Handle background messages when app is terminated or in background
 @pragma('vm:entry-point')
@@ -50,6 +51,7 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => AttendanceProvider()),
         ChangeNotifierProvider(create: (_) => FaceRecognitionProvider()),
         ChangeNotifierProvider(create: (_) => NotificationProvider()),
+        ChangeNotifierProvider(create: (_) => BleProvider()),  // Added BLE provider
       ],
       child: MaterialApp(
         debugShowCheckedModeBanner: false,

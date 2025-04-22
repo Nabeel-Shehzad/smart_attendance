@@ -3,9 +3,11 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../../providers/attendance_provider.dart';
+import '../../providers/ble_provider.dart';
+import '../../providers/auth_provider.dart'; // Added import for AuthProvider
 import '../../models/attendance_session.dart';
 
-class AttendanceSessionDetailPage extends StatelessWidget {
+class AttendanceSessionDetailPage extends StatefulWidget {
   final String sessionId;
   final String courseId;
   final String courseName;
@@ -18,8 +20,33 @@ class AttendanceSessionDetailPage extends StatelessWidget {
   }) : super(key: key);
 
   @override
+  State<AttendanceSessionDetailPage> createState() => _AttendanceSessionDetailPageState();
+}
+
+class _AttendanceSessionDetailPageState extends State<AttendanceSessionDetailPage> {
+  bool _isBroadcasting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkBleSignalStatus();
+  }
+
+  Future<void> _checkBleSignalStatus() async {
+    final attendanceProvider = Provider.of<AttendanceProvider>(context, listen: false);
+    final isActive = await attendanceProvider.isSessionSignalActive(widget.sessionId);
+
+    if (mounted) {
+      setState(() {
+        _isBroadcasting = isActive;
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final attendanceProvider = Provider.of<AttendanceProvider>(context);
+    final bleProvider = Provider.of<BleProvider>(context);
     final theme = Theme.of(context);
 
     return Scaffold(
@@ -40,7 +67,7 @@ class AttendanceSessionDetailPage extends StatelessWidget {
         ),
       ),
       body: StreamBuilder(
-        stream: attendanceProvider.getAttendanceSession(sessionId),
+        stream: attendanceProvider.getAttendanceSession(widget.sessionId),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
@@ -98,10 +125,23 @@ class AttendanceSessionDetailPage extends StatelessWidget {
           final attendees = session.attendees;
           final isActive = session.isActive;
 
+          // Get BLE signal status from Firestore, safely accessing the data
+          final data = snapshot.data!.data() as Map<String, dynamic>?;
+          final bleSignalActive = data?['bleSignalActive'] ?? false;
+
+          // Update local state if it doesn't match Firestore
+          if (_isBroadcasting != bleSignalActive && mounted) {
+            // Use a Future.microtask to avoid setState during build
+            Future.microtask(() {
+              setState(() {
+                _isBroadcasting = bleSignalActive;
+              });
+            });
+          }
+
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Header Section
               Container(
                 width: double.infinity,
                 decoration: BoxDecoration(
@@ -125,7 +165,7 @@ class AttendanceSessionDetailPage extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      courseName,
+                      widget.courseName,
                       style: GoogleFonts.poppins(
                         fontSize: 16,
                         color: Colors.white.withOpacity(0.9),
@@ -134,8 +174,6 @@ class AttendanceSessionDetailPage extends StatelessWidget {
                   ],
                 ),
               ),
-
-              // Session Info Card
               Container(
                 margin: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -200,6 +238,36 @@ class AttendanceSessionDetailPage extends StatelessWidget {
                               ),
                             ],
                           ),
+                          const Spacer(),
+                          if (_isBroadcasting)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.blue.shade100,
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.bluetooth_searching,
+                                    size: 16,
+                                    color: Colors.blue.shade700,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    'BLE Active',
+                                    style: GoogleFonts.poppins(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w500,
+                                      color: Colors.blue.shade700,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                         ],
                       ),
                     ),
@@ -242,84 +310,23 @@ class AttendanceSessionDetailPage extends StatelessWidget {
                         padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                         child: Row(
                           children: [
-                            // Send Signal Button (NEW)
                             Expanded(
                               child: ElevatedButton.icon(
-                                onPressed: session.signalTime != null
-                                    ? null // Disable if signal already sent
-                                    : () async {
-                                        final confirm = await showDialog<bool>(
-                                          context: context,
-                                          builder: (context) => AlertDialog(
-                                            shape: RoundedRectangleBorder(
-                                              borderRadius: BorderRadius.circular(16),
-                                            ),
-                                            title: Text(
-                                              'Send Attendance Signal?',
-                                              style: GoogleFonts.poppins(
-                                                fontWeight: FontWeight.w600,
-                                              ),
-                                            ),
-                                            content: Text(
-                                              'This will notify all students to mark their attendance. Students will be marked late after ${session.lateThresholdMinutes} minutes and absent after ${session.absentThresholdMinutes} minutes.',
-                                              style: GoogleFonts.poppins(),
-                                            ),
-                                            actions: [
-                                              TextButton(
-                                                onPressed: () => Navigator.pop(context, false),
-                                                child: Text(
-                                                  'Cancel',
-                                                  style: GoogleFonts.poppins(),
-                                                ),
-                                              ),
-                                              TextButton(
-                                                onPressed: () => Navigator.pop(context, true),
-                                                style: TextButton.styleFrom(
-                                                  foregroundColor: theme.primaryColor,
-                                                ),
-                                                child: Text(
-                                                  'Send Signal',
-                                                  style: GoogleFonts.poppins(
-                                                    fontWeight: FontWeight.w600,
-                                                  ),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        );
-
-                                        if (confirm == true) {
-                                          final success = await attendanceProvider.sendAttendanceSignal(sessionId);
-
-                                          if (context.mounted) {
-                                            ScaffoldMessenger.of(context).showSnackBar(
-                                              SnackBar(
-                                                content: Text(
-                                                  success
-                                                      ? 'Attendance signal sent successfully'
-                                                      : 'Failed to send signal: ${attendanceProvider.error}',
-                                                  style: GoogleFonts.poppins(),
-                                                ),
-                                                backgroundColor: success ? Colors.green : Colors.red,
-                                                behavior: SnackBarBehavior.floating,
-                                                shape: RoundedRectangleBorder(
-                                                  borderRadius: BorderRadius.circular(10),
-                                                ),
-                                                margin: const EdgeInsets.all(10),
-                                              ),
-                                            );
-                                          }
-                                        }
-                                      },
-                                icon: const Icon(Icons.send_rounded),
+                                onPressed: bleProvider.status == BleStatus.error
+                                    ? null
+                                    : (_isBroadcasting ? _stopBroadcasting : _startBroadcasting),
+                                icon: Icon(_isBroadcasting
+                                    ? Icons.bluetooth_disabled
+                                    : Icons.bluetooth_searching),
                                 label: Text(
-                                  session.signalTime != null ? 'Signal Sent' : 'Send Signal',
+                                  _isBroadcasting ? 'Stop BLE Signal' : 'Send BLE Signal',
                                   style: GoogleFonts.poppins(
                                     fontWeight: FontWeight.w500,
                                   ),
                                 ),
                                 style: ElevatedButton.styleFrom(
-                                  backgroundColor: theme.primaryColor,
+                                  backgroundColor:
+                                      _isBroadcasting ? Colors.orange : theme.primaryColor,
                                   foregroundColor: Colors.white,
                                   padding: const EdgeInsets.symmetric(
                                     horizontal: 16,
@@ -332,7 +339,6 @@ class AttendanceSessionDetailPage extends StatelessWidget {
                               ),
                             ),
                             const SizedBox(width: 12),
-                            // End Session Button (EXISTING)
                             Expanded(
                               child: OutlinedButton.icon(
                                 onPressed: () async {
@@ -377,7 +383,12 @@ class AttendanceSessionDetailPage extends StatelessWidget {
                                   );
 
                                   if (confirm == true) {
-                                    final success = await attendanceProvider.endAttendanceSession(sessionId);
+                                    if (_isBroadcasting) {
+                                      await _stopBroadcasting();
+                                    }
+
+                                    final success =
+                                        await attendanceProvider.endAttendanceSession(widget.sessionId);
 
                                     if (context.mounted) {
                                       ScaffoldMessenger.of(context).showSnackBar(
@@ -422,12 +433,71 @@ class AttendanceSessionDetailPage extends StatelessWidget {
                           ],
                         ),
                       ),
+                      if (bleProvider.status == BleStatus.error)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.red.shade50,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.red.shade200),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.error_outline,
+                                  color: Colors.red.shade700,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Bluetooth error: ${bleProvider.errorMessage}',
+                                    style: GoogleFonts.poppins(
+                                      fontSize: 12,
+                                      color: Colors.red.shade700,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        child: Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                Icons.info_outline,
+                                color: Colors.blue.shade700,
+                                size: 20,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Send a Bluetooth (BLE) signal to allow nearby students to mark attendance. ' +
+                                      'Only students physically present and within Bluetooth range can mark attendance.',
+                                  style: GoogleFonts.poppins(
+                                    fontSize: 12,
+                                    color: Colors.blue.shade700,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ],
                   ],
                 ),
               ),
-
-              // Attendees Section
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
                 child: Row(
@@ -467,8 +537,6 @@ class AttendanceSessionDetailPage extends StatelessWidget {
                   ],
                 ),
               ),
-
-              // Attendees List
               Expanded(
                 child: attendees.isEmpty
                     ? Center(
@@ -499,7 +567,9 @@ class AttendanceSessionDetailPage extends StatelessWidget {
                             if (isActive) ...[
                               const SizedBox(height: 8),
                               Text(
-                                'Waiting for students to mark attendance',
+                                _isBroadcasting
+                                    ? 'BLE signal is active. Waiting for nearby students to mark attendance.'
+                                    : 'Tap "Send BLE Signal" to enable attendance marking for nearby students',
                                 style: GoogleFonts.poppins(
                                   fontSize: 14,
                                   color: Colors.grey[600],
@@ -517,6 +587,7 @@ class AttendanceSessionDetailPage extends StatelessWidget {
                           final attendee = attendees[index];
                           final markedAt = (attendee['markedAt'] as dynamic).toDate();
                           final verificationMethod = attendee['verificationMethod'] ?? 'Manual';
+                          final bleVerified = attendee['bleVerified'] ?? false;
 
                           return Container(
                             margin: const EdgeInsets.only(bottom: 12),
@@ -548,12 +619,48 @@ class AttendanceSessionDetailPage extends StatelessWidget {
                                   ),
                                 ),
                               ),
-                              title: Text(
-                                attendee['studentName'],
-                                style: GoogleFonts.poppins(
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 15,
-                                ),
+                              title: Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      attendee['studentName'],
+                                      style: GoogleFonts.poppins(
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 15,
+                                      ),
+                                    ),
+                                  ),
+                                  if (bleVerified)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.blue.shade50,
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            Icons.bluetooth,
+                                            size: 12,
+                                            color: Colors.blue.shade700,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            'BLE',
+                                            style: GoogleFonts.poppins(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w500,
+                                              color: Colors.blue.shade700,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                ],
                               ),
                               subtitle: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -616,6 +723,126 @@ class AttendanceSessionDetailPage extends StatelessWidget {
         },
       ),
     );
+  }
+
+  Future<void> _startBroadcasting() async {
+    final attendanceProvider = Provider.of<AttendanceProvider>(context, listen: false);
+    final bleProvider = Provider.of<BleProvider>(context, listen: false);
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+
+    final hasPermissions = await bleProvider.checkAndRequestPermissions();
+    if (!hasPermissions) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Bluetooth permissions required to send attendance signals',
+              style: GoogleFonts.poppins(),
+            ),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    final signalSuccess = await attendanceProvider.sendAttendanceSignal(widget.sessionId);
+    if (!signalSuccess) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Failed to enable attendance signal: ${attendanceProvider.error}',
+              style: GoogleFonts.poppins(),
+            ),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    final broadcastSuccess = await bleProvider.broadcastAttendanceSignal(
+      sessionId: widget.sessionId,
+      courseId: widget.courseId,
+      instructorId: authProvider.user?.uid ?? '', // Add the required instructorId parameter
+      validityDuration: 30, // Set validity duration to 30 minutes
+    );
+
+    if (broadcastSuccess) {
+      setState(() {
+        _isBroadcasting = true;
+      });
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'BLE attendance signal activated',
+              style: GoogleFonts.poppins(),
+            ),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } else {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Failed to start BLE broadcast: ${bleProvider.errorMessage}',
+              style: GoogleFonts.poppins(),
+            ),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+
+      await attendanceProvider.stopAttendanceSignal(widget.sessionId);
+    }
+  }
+
+  Future<void> _stopBroadcasting() async {
+    final attendanceProvider = Provider.of<AttendanceProvider>(context, listen: false);
+    final bleProvider = Provider.of<BleProvider>(context, listen: false);
+
+    final bleSuccess = await bleProvider.stopBroadcasting();
+
+    final success = await attendanceProvider.stopAttendanceSignal(widget.sessionId);
+
+    if (success) {
+      setState(() {
+        _isBroadcasting = false;
+      });
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'BLE attendance signal deactivated',
+              style: GoogleFonts.poppins(),
+            ),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } else if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Failed to stop attendance signal: ${attendanceProvider.error}',
+            style: GoogleFonts.poppins(),
+          ),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   Widget _buildInfoRow(IconData icon, String label, String value, ThemeData theme) {
