@@ -20,6 +20,8 @@ class AttendanceProvider extends ChangeNotifier {
     required String title,
     required DateTime startTime,
     required DateTime endTime,
+    int lateThresholdMinutes = 15,
+    int absentThresholdMinutes = 30,
   }) async {
     try {
       _isLoading = true;
@@ -31,6 +33,8 @@ class AttendanceProvider extends ChangeNotifier {
         title: title,
         startTime: startTime,
         endTime: endTime,
+        lateThresholdMinutes: lateThresholdMinutes,
+        absentThresholdMinutes: absentThresholdMinutes,
       );
       
       return sessionRef;
@@ -72,6 +76,41 @@ class AttendanceProvider extends ChangeNotifier {
     }
   }
   
+  // Send attendance signal to students (new function)
+  Future<bool> sendAttendanceSignal(String sessionId) async {
+    try {
+      _isLoading = true;
+      _error = null;
+      notifyListeners();
+      
+      await _attendanceService.sendAttendanceSignal(sessionId);
+      
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+  
+  // Get student notifications (new function)
+  Stream<QuerySnapshot> getNotifications() {
+    return _attendanceService.getNotifications();
+  }
+  
+  // Mark a notification as read (new function)
+  Future<bool> markNotificationAsRead(String notificationId) async {
+    try {
+      await _attendanceService.markNotificationAsRead(notificationId);
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      return false;
+    }
+  }
+  
   // Mark attendance for a student
   Future<bool> markAttendance({
     required String sessionId,
@@ -106,27 +145,36 @@ class AttendanceProvider extends ChangeNotifier {
     required String studentId,
     required String studentName,
     required File imageFile,
+    Map<String, dynamic>? verificationResult, // Add optional parameter to pass existing verification result
   }) async {
     try {
       _isLoading = true;
       _error = null;
       notifyListeners();
       
-      // Check if student image exists in Firebase Storage
-      final hasImage = await _faceRecognitionService.checkStudentImageExists(studentId);
+      Map<String, dynamic> comparisonResult;
       
-      if (!hasImage) {
-        _error = 'No profile image found. Please upload your image first.';
-        return false;
+      // Only do face comparison if verification result is not provided
+      if (verificationResult == null) {
+        // Check if student image exists in Firebase Storage
+        final hasImage = await _faceRecognitionService.checkStudentImageExists(studentId);
+        
+        if (!hasImage) {
+          _error = 'No profile image found. Please upload your image first.';
+          return false;
+        }
+        
+        // Compare the captured image with the stored image
+        comparisonResult = await _faceRecognitionService.compareFaces(
+          studentId: studentId,
+          imageFile: imageFile,
+        );
+      } else {
+        // Use the provided verification result
+        comparisonResult = verificationResult;
       }
       
-      // Compare the captured image with the stored image
-      final comparisonResult = await _faceRecognitionService.compareFaces(
-        studentId: studentId,
-        imageFile: imageFile,
-      );
-      
-      if (comparisonResult['match'] == true) {
+      if (comparisonResult['verification_match'] == true) {
         // If faces match, mark attendance
         await _attendanceService.markAttendance(
           sessionId: sessionId,
@@ -152,7 +200,6 @@ class AttendanceProvider extends ChangeNotifier {
       notifyListeners();
     }
   }
-
   
   // Clear error
   void clearError() {

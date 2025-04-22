@@ -676,17 +676,26 @@ class _StudentAttendancePageState extends State<StudentAttendancePage> with Sing
                                         imageFile: imageFile,
                                       );
                                       
-                                      if (comparisonResult != null && comparisonResult['match'] == true) {
-                                        // If faces match, mark attendance
+                                      if (comparisonResult != null && comparisonResult['verification_match'] == true) {
+                                        // If faces match, mark attendance - pass the verification result to avoid double API calls
                                         final success = await attendanceProvider.markAttendanceWithFaceRecognition(
                                           sessionId: sessionId,
                                           studentId: studentId,
                                           studentName: studentName,
                                           imageFile: imageFile,
+                                          verificationResult: comparisonResult, // Pass result to avoid double API call
                                         );
                                     
                                         if (context.mounted) {
                                           Navigator.of(context).pop();
+                                          
+                                          // Force UI refresh after successful attendance marking
+                                          if (success) {
+                                            setState(() {
+                                              // Refresh the parent widget
+                                            });
+                                          }
+                                          
                                           ScaffoldMessenger.of(context).showSnackBar(
                                             SnackBar(
                                               content: Text(
@@ -1115,7 +1124,12 @@ class _SessionCard extends StatelessWidget {
       context: context,
       barrierDismissible: false,
       builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setState) {
+        builder: (dialogContext, setDialogState) {
+          // Local state variables for the dialog
+          bool isProcessing = false;
+          bool isUploading = false;
+          double uploadProgress = 0.0;
+
           return AlertDialog(
             title: Text(
               'Face Recognition Attendance',
@@ -1130,160 +1144,368 @@ class _SessionCard extends StatelessWidget {
                         .checkStudentImageExists(studentId),
                     builder: (context, snapshot) {
                       if (snapshot.connectionState == ConnectionState.waiting) {
-                        return const Center(child: CircularProgressIndicator());
+                        return const Center(
+                          child: Column(
+                            children: [
+                              CircularProgressIndicator(),
+                              SizedBox(height: 16),
+                              Text('Checking profile image...')
+                            ],
+                          ),
+                        );
                       }
                       
                       final hasImage = snapshot.data ?? false;
                       
                       if (!hasImage) {
-                        return Column(
-                          children: [
-                            Icon(
-                              Icons.error_outline,
-                              size: 48,
-                              color: Colors.orange[700],
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              'No profile image found',
-                              style: GoogleFonts.poppins(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Please upload your profile image to use face recognition for attendance',
-                              style: GoogleFonts.poppins(),
-                              textAlign: TextAlign.center,
-                            ),
-                            const SizedBox(height: 16),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        return StatefulBuilder(
+                          builder: (context, setUploadState) {
+                            return Column(
                               children: [
-                                ElevatedButton.icon(
-                                  onPressed: () async {
-                                    final result = await Provider.of<FaceRecognitionProvider>(context, listen: false)
-                                        .uploadStudentImage(ImageSource.camera);
-                                    if (result != null && context.mounted) {
-                                      setState(() {});
-                                    }
-                                  },
-                                  icon: const Icon(Icons.camera_alt),
-                                  label: const Text('Camera'),
+                                Icon(
+                                  Icons.error_outline,
+                                  size: 48,
+                                  color: Colors.orange[700],
                                 ),
-                                ElevatedButton.icon(
-                                  onPressed: () async {
-                                    final result = await Provider.of<FaceRecognitionProvider>(context, listen: false)
-                                        .uploadStudentImage(ImageSource.gallery);
-                                    if (result != null && context.mounted) {
-                                      setState(() {});
-                                    }
-                                  },
-                                  icon: const Icon(Icons.photo_library),
-                                  label: const Text('Gallery'),
+                                const SizedBox(height: 16),
+                                Text(
+                                  'No profile image found',
+                                  style: GoogleFonts.poppins(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w500,
+                                  ),
                                 ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'Please upload your profile image to use face recognition for attendance',
+                                  style: GoogleFonts.poppins(),
+                                  textAlign: TextAlign.center,
+                                ),
+                                const SizedBox(height: 16),
+                                
+                                // Show progress indicator during upload
+                                if (isUploading) ...[
+                                  const SizedBox(height: 8),
+                                  Column(
+                                    children: [
+                                      LinearProgressIndicator(
+                                        value: uploadProgress,
+                                        backgroundColor: Colors.grey[200],
+                                        valueColor: AlwaysStoppedAnimation<Color>(
+                                          Theme.of(context).primaryColor,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        'Uploading image: ${(uploadProgress * 100).toStringAsFixed(0)}%',
+                                        style: GoogleFonts.poppins(
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 16),
+                                ] else ...[
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                    children: [
+                                      ElevatedButton.icon(
+                                        onPressed: isUploading 
+                                          ? null 
+                                          : () async {
+                                              try {
+                                                // Show loading
+                                                setUploadState(() {
+                                                  isUploading = true;
+                                                });
+                                                
+                                                final faceProvider = Provider.of<FaceRecognitionProvider>(
+                                                  context, 
+                                                  listen: false
+                                                );
+                                                
+                                                // Use a separate image picker to avoid multiple calls
+                                                final picker = ImagePicker();
+                                                final pickedFile = await picker.pickImage(
+                                                  source: ImageSource.camera,
+                                                  imageQuality: 80,
+                                                );
+                                                
+                                                if (pickedFile != null && context.mounted) {
+                                                  // Track progress
+                                                  await faceProvider.uploadStudentImage(
+                                                    ImageSource.camera,
+                                                    pickedFile: pickedFile,
+                                                  );
+                                                  
+                                                  // Update progress in UI
+                                                  if (context.mounted) {
+                                                    setUploadState(() {
+                                                      uploadProgress = faceProvider.uploadProgress;
+                                                    });
+                                                  }
+                                                  
+                                                  // When complete, refresh dialog
+                                                  if (context.mounted) {
+                                                    Navigator.of(dialogContext).pop();
+                                                    _handleAttendanceMarking(context);
+                                                  }
+                                                } else {
+                                                  if (context.mounted) {
+                                                    setUploadState(() {
+                                                      isUploading = false;
+                                                    });
+                                                  }
+                                                }
+                                              } catch (e) {
+                                                if (context.mounted) {
+                                                  setUploadState(() {
+                                                    isUploading = false;
+                                                  });
+                                                  
+                                                  ScaffoldMessenger.of(context).showSnackBar(
+                                                    SnackBar(
+                                                      content: Text(
+                                                        'Error: $e',
+                                                        style: GoogleFonts.poppins(),
+                                                      ),
+                                                      backgroundColor: Colors.red,
+                                                      behavior: SnackBarBehavior.floating,
+                                                    ),
+                                                  );
+                                                }
+                                              }
+                                            },
+                                        icon: const Icon(Icons.camera_alt),
+                                        label: const Text('Camera'),
+                                      ),
+                                      ElevatedButton.icon(
+                                        onPressed: isUploading
+                                          ? null
+                                          : () async {
+                                              try {
+                                                // Show loading
+                                                setUploadState(() {
+                                                  isUploading = true;
+                                                });
+                                                
+                                                final faceProvider = Provider.of<FaceRecognitionProvider>(
+                                                  context, 
+                                                  listen: false
+                                                );
+                                                
+                                                // Use a separate image picker to avoid multiple calls
+                                                final picker = ImagePicker();
+                                                final pickedFile = await picker.pickImage(
+                                                  source: ImageSource.gallery,
+                                                  imageQuality: 80,
+                                                );
+                                                
+                                                if (pickedFile != null && context.mounted) {
+                                                  // Track progress
+                                                  await faceProvider.uploadStudentImage(
+                                                    ImageSource.gallery,
+                                                    pickedFile: pickedFile,
+                                                  );
+                                                  
+                                                  // Update progress in UI
+                                                  if (context.mounted) {
+                                                    setUploadState(() {
+                                                      uploadProgress = faceProvider.uploadProgress;
+                                                    });
+                                                  }
+                                                  
+                                                  // When complete, refresh dialog
+                                                  if (context.mounted) {
+                                                    Navigator.of(dialogContext).pop();
+                                                    _handleAttendanceMarking(context);
+                                                  }
+                                                } else {
+                                                  if (context.mounted) {
+                                                    setUploadState(() {
+                                                      isUploading = false;
+                                                    });
+                                                  }
+                                                }
+                                              } catch (e) {
+                                                if (context.mounted) {
+                                                  setUploadState(() {
+                                                    isUploading = false;
+                                                  });
+                                                  
+                                                  ScaffoldMessenger.of(context).showSnackBar(
+                                                    SnackBar(
+                                                      content: Text(
+                                                        'Error: $e',
+                                                        style: GoogleFonts.poppins(),
+                                                      ),
+                                                      backgroundColor: Colors.red,
+                                                      behavior: SnackBarBehavior.floating,
+                                                    ),
+                                                  );
+                                                }
+                                              }
+                                            },
+                                        icon: const Icon(Icons.photo_library),
+                                        label: const Text('Gallery'),
+                                      ),
+                                    ],
+                                  ),
+                                ],
                               ],
-                            ),
-                          ],
+                            );
+                          }
                         );
                       }
                       
-                      return Column(
-                        children: [
-                          Text(
-                            'Take a selfie to verify your identity and mark attendance',
-                            style: GoogleFonts.poppins(),
-                            textAlign: TextAlign.center,
-                          ),
-                          const SizedBox(height: 16),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      return StatefulBuilder(
+                        builder: (context, setAttendanceState) {
+                          return Column(
                             children: [
-                              ElevatedButton.icon(
-                                onPressed: () async {
-                                  try {
-                                    final picker = ImagePicker();
-                                    final pickedFile = await picker.pickImage(
-                                      source: ImageSource.camera,
-                                      imageQuality: 80,
-                                    );
-                                    
-                                    if (pickedFile != null && context.mounted) {
-                                      final imageFile = File(pickedFile.path);
-                                      
-                                      // Get comparison result from face recognition provider
-                                      final comparisonResult = 
-                                          await Provider.of<FaceRecognitionProvider>(context, listen: false)
-                                              .compareFaces(
-                                                studentId: studentId,
-                                                imageFile: imageFile,
-                                              );
-                                      
-                                      if (comparisonResult != null && 
-                                          comparisonResult['verification_match'] == true) {
-                                        // If faces match, mark attendance
-                                        final success = 
-                                            await Provider.of<AttendanceProvider>(context, listen: false)
-                                                .markAttendanceWithFaceRecognition(
-                                                  sessionId: session.id,
-                                                  studentId: studentId,
-                                                  studentName: studentName,
-                                                  imageFile: imageFile,
-                                                );
-                                    
-                                        if (context.mounted) {
-                                          Navigator.of(context).pop();
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            SnackBar(
-                                              content: Text(
-                                                success
-                                                    ? 'Attendance marked successfully'
-                                                    : 'Failed to mark attendance',
-                                                style: GoogleFonts.poppins(),
-                                              ),
-                                              backgroundColor: success ? Colors.green : Colors.red,
-                                              behavior: SnackBarBehavior.floating,
-                                            ),
-                                          );
-                                        }
-                                      } else {
-                                        // If faces don't match
-                                        if (context.mounted) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            SnackBar(
-                                              content: Text(
-                                                'Face verification failed. Please try again.',
-                                                style: GoogleFonts.poppins(),
-                                              ),
-                                              backgroundColor: Colors.red,
-                                              behavior: SnackBarBehavior.floating,
-                                            ),
-                                          );
-                                        }
-                                      }
-                                    }
-                                  } catch (e) {
-                                    if (context.mounted) {
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        SnackBar(
-                                          content: Text(
-                                            'Error: $e',
-                                            style: GoogleFonts.poppins(),
-                                          ),
-                                          backgroundColor: Colors.red,
-                                          behavior: SnackBarBehavior.floating,
-                                        ),
-                                      );
-                                    }
-                                  }
-                                },
-                                icon: const Icon(Icons.camera_alt),
-                                label: const Text('Take Photo'),
+                              Text(
+                                'Take a selfie to verify your identity and mark attendance',
+                                style: GoogleFonts.poppins(),
+                                textAlign: TextAlign.center,
                               ),
+                              const SizedBox(height: 16),
+                              
+                              // Show loading indicator when processing
+                              if (isProcessing) 
+                                Column(
+                                  children: [
+                                    const SizedBox(
+                                      width: 40,
+                                      height: 40,
+                                      child: CircularProgressIndicator(),
+                                    ),
+                                    const SizedBox(height: 16),
+                                    Text(
+                                      'Verifying your identity...',
+                                      style: GoogleFonts.poppins(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ],
+                                )
+                              else
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                  children: [
+                                    ElevatedButton.icon(
+                                      onPressed: () async {
+                                        try {
+                                          setAttendanceState(() {
+                                            isProcessing = true; // Show loading indicator
+                                          });
+                                          
+                                          final picker = ImagePicker();
+                                          final pickedFile = await picker.pickImage(
+                                            source: ImageSource.camera,
+                                            imageQuality: 80,
+                                          );
+                                          
+                                          if (pickedFile != null && context.mounted) {
+                                            final imageFile = File(pickedFile.path);
+                                            
+                                            // Get comparison result from face recognition provider
+                                            final faceRecognitionProvider = Provider.of<FaceRecognitionProvider>(
+                                              context, 
+                                              listen: false
+                                            );
+                                            
+                                            final comparisonResult = await faceRecognitionProvider.compareFaces(
+                                              studentId: studentId,
+                                              imageFile: imageFile,
+                                            );
+                                            
+                                            if (!context.mounted) return;
+                                            
+                                            if (comparisonResult != null && 
+                                                comparisonResult['verification_match'] == true) {
+                                              // If faces match, mark attendance
+                                              final attendanceProvider = Provider.of<AttendanceProvider>(
+                                                context, 
+                                                listen: false
+                                              );
+                                              
+                                              final success = await attendanceProvider.markAttendanceWithFaceRecognition(
+                                                sessionId: session.id,
+                                                studentId: studentId,
+                                                studentName: studentName,
+                                                imageFile: imageFile,
+                                                verificationResult: comparisonResult, // Pass result to avoid double API call
+                                              );
+                                          
+                                              if (context.mounted) {
+                                                Navigator.of(dialogContext).pop();
+                                                ScaffoldMessenger.of(context).showSnackBar(
+                                                  SnackBar(
+                                                    content: Text(
+                                                      success
+                                                          ? 'Attendance marked successfully'
+                                                          : 'Failed to mark attendance: ${attendanceProvider.error}',
+                                                      style: GoogleFonts.poppins(),
+                                                    ),
+                                                    backgroundColor: success ? Colors.green : Colors.red,
+                                                    behavior: SnackBarBehavior.floating,
+                                                  ),
+                                                );
+                                              }
+                                            } else {
+                                              // If faces don't match
+                                              setAttendanceState(() {
+                                                isProcessing = false; // Hide loading indicator
+                                              });
+                                              
+                                              if (context.mounted) {
+                                                ScaffoldMessenger.of(context).showSnackBar(
+                                                  SnackBar(
+                                                    content: Text(
+                                                      'Face verification failed. Please try again.',
+                                                      style: GoogleFonts.poppins(),
+                                                    ),
+                                                    backgroundColor: Colors.red,
+                                                    behavior: SnackBarBehavior.floating,
+                                                  ),
+                                                );
+                                              }
+                                            }
+                                          } else {
+                                            // User canceled photo capture
+                                            setAttendanceState(() {
+                                              isProcessing = false; // Hide loading indicator
+                                            });
+                                          }
+                                        } catch (e) {
+                                          // Handle any errors
+                                          setAttendanceState(() {
+                                            isProcessing = false; // Hide loading indicator
+                                          });
+                                          
+                                          if (context.mounted) {
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                  'Error: $e',
+                                                  style: GoogleFonts.poppins(),
+                                                ),
+                                                backgroundColor: Colors.red,
+                                                behavior: SnackBarBehavior.floating,
+                                              ),
+                                            );
+                                          }
+                                        }
+                                      },
+                                      icon: const Icon(Icons.camera_alt),
+                                      label: const Text('Take Photo'),
+                                    ),
+                                  ],
+                                ),
                             ],
-                          ),
-                        ],
+                          );
+                        }
                       );
                     },
                   ),
@@ -1291,13 +1513,14 @@ class _SessionCard extends StatelessWidget {
               ),
             ),
             actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: Text(
-                  'Cancel',
-                  style: GoogleFonts.poppins(),
+              if (!isProcessing && !isUploading) // Only show cancel button when not processing
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: Text(
+                    'Cancel',
+                    style: GoogleFonts.poppins(),
+                  ),
                 ),
-              ),
             ],
           );
         },

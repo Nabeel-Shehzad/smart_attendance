@@ -1,9 +1,16 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'dart:convert';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  
+  // Secure storage keys
+  static const String _emailKey = 'auth_email';
+  static const String _passwordKey = 'auth_password';
 
   // Register student
   Future<UserCredential> registerStudent({
@@ -67,19 +74,67 @@ class AuthService {
   Future<UserCredential> signIn({
     required String email,
     required String password,
+    bool rememberCredentials = true,
   }) async {
     try {
-      return await _auth.signInWithEmailAndPassword(
+      final credential = await _auth.signInWithEmailAndPassword(
         email: email,
         password: password,
       );
+      
+      // Store credentials securely if remember is enabled
+      if (rememberCredentials) {
+        await _storeCredentialsSecurely(email, password);
+      }
+      
+      return credential;
     } catch (e) {
       rethrow;
     }
   }
+  
+  // Store credentials securely
+  Future<void> _storeCredentialsSecurely(String email, String password) async {
+    await _secureStorage.write(key: _emailKey, value: email);
+    await _secureStorage.write(key: _passwordKey, value: password);
+  }
+  
+  // Check if credentials are stored
+  Future<bool> hasStoredCredentials() async {
+    final email = await _secureStorage.read(key: _emailKey);
+    final password = await _secureStorage.read(key: _passwordKey);
+    return email != null && password != null;
+  }
+  
+  // Try to sign in with stored credentials
+  Future<UserCredential?> tryAutoLogin() async {
+    try {
+      final email = await _secureStorage.read(key: _emailKey);
+      final password = await _secureStorage.read(key: _passwordKey);
+      
+      if (email != null && password != null) {
+        return await _auth.signInWithEmailAndPassword(
+          email: email,
+          password: password,
+        );
+      }
+      return null;
+    } catch (e) {
+      // If auto-login fails, clear stored credentials
+      await clearStoredCredentials();
+      return null;
+    }
+  }
+  
+  // Clear stored credentials
+  Future<void> clearStoredCredentials() async {
+    await _secureStorage.delete(key: _emailKey);
+    await _secureStorage.delete(key: _passwordKey);
+  }
 
   // Sign out
   Future<void> signOut() async {
+    await clearStoredCredentials();
     await _auth.signOut();
   }
 
@@ -109,4 +164,7 @@ class AuthService {
     }
     return null;
   }
+  
+  // Stream to monitor authentication state changes
+  Stream<User?> get authStateChanges => _auth.authStateChanges();
 }

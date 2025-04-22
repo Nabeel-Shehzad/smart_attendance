@@ -12,22 +12,47 @@ class StudentCoursesPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final courseProvider = Provider.of<CourseProvider>(context);
     final authProvider = Provider.of<AuthProvider>(context);
-    final studentId = authProvider.user?.uid ?? '';
+    
+    // Check if user is authenticated before attempting to get courses
+    // We'll return a placeholder widget if not authenticated (happens during logout)
+    if (authProvider.user == null) {
+      return const Center(
+        child: Text(
+          'Please log in to view your courses',
+          style: TextStyle(fontSize: 16),
+        ),
+      );
+    }
 
+    final studentId = authProvider.user!.uid;
+    
     return StreamBuilder(
       stream: courseProvider.getStudentCourses(),
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-
+        // Handle potential authentication errors during stream building
+        // This happens if the user logs out while the stream is still active
         if (snapshot.hasError) {
+          // Check if the error is related to authentication
+          final error = snapshot.error.toString();
+          if (error.contains('not authenticated') || error.contains('permission-denied')) {
+            return const Center(
+              child: Text(
+                'You have been logged out',
+                style: TextStyle(fontSize: 16),
+              ),
+            );
+          }
+          
           return Center(
             child: Text(
               'Error: ${snapshot.error}',
               style: GoogleFonts.poppins(color: Colors.red),
             ),
           );
+        }
+
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
         }
 
         // Filter courses where the student is enrolled

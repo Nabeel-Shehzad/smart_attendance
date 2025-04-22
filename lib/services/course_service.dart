@@ -64,12 +64,15 @@ class CourseService {
   
   // Get all courses for the current student
   Stream<QuerySnapshot> getStudentCourses() {
+    // Return empty result if user is not authenticated (during logout)
     if (currentUserId == null) {
-      throw Exception('User not authenticated');
+      return _firestore
+          .collection('courses')
+          .where('nonexistent_field', isEqualTo: true) // Empty result query
+          .snapshots();
     }
     
     // Get all courses and filter in the UI
-    // We can't use arrayContains with complex objects
     return _firestore
         .collection('courses')
         .snapshots();

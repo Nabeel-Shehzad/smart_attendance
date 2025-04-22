@@ -26,6 +26,10 @@ class _CreateAttendanceSessionPageState extends State<CreateAttendanceSessionPag
   DateTime _endTime = DateTime.now().add(const Duration(hours: 1));
   bool _isCreating = false;
   
+  // Add controllers for late and absent thresholds
+  int _lateThresholdMinutes = 15; // Default: 15 minutes
+  int _absentThresholdMinutes = 30; // Default: 30 minutes
+  
   @override
   void dispose() {
     _titleController.dispose();
@@ -104,6 +108,8 @@ class _CreateAttendanceSessionPageState extends State<CreateAttendanceSessionPag
         title: _titleController.text.trim(),
         startTime: _startTime,
         endTime: _endTime,
+        lateThresholdMinutes: _lateThresholdMinutes,
+        absentThresholdMinutes: _absentThresholdMinutes,
       );
       
       if (sessionRef != null && context.mounted) {
@@ -356,6 +362,184 @@ class _CreateAttendanceSessionPageState extends State<CreateAttendanceSessionPag
                                 ),
                               ],
                             ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    
+                    const SizedBox(height: 32),
+                    
+                    // Attendance Thresholds Section
+                    Text(
+                      'Attendance Thresholds',
+                      style: GoogleFonts.poppins(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey[800],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Set the time limits for marking students as late or absent',
+                      style: GoogleFonts.poppins(
+                        fontSize: 14,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    
+                    // Late Threshold Card
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.05),
+                            blurRadius: 10,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: Colors.orange.withOpacity(0.1),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(
+                                  Icons.timer,
+                                  color: Colors.orange,
+                                  size: 20,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Mark students as late after',
+                                      style: GoogleFonts.poppins(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w500,
+                                        color: Colors.grey[800],
+                                      ),
+                                    ),
+                                    Text(
+                                      '$_lateThresholdMinutes minutes',
+                                      style: GoogleFonts.poppins(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.orange,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          Slider(
+                            value: _lateThresholdMinutes.toDouble(),
+                            min: 5,
+                            max: 60,
+                            divisions: 11, // 5-minute increments (5, 10, 15, ... 60)
+                            label: '$_lateThresholdMinutes min',
+                            activeColor: Colors.orange,
+                            inactiveColor: Colors.orange.withOpacity(0.2),
+                            onChanged: (value) {
+                              setState(() {
+                                _lateThresholdMinutes = value.toInt();
+                                
+                                // Ensure absent threshold is always greater than late threshold
+                                if (_absentThresholdMinutes <= _lateThresholdMinutes) {
+                                  _absentThresholdMinutes = _lateThresholdMinutes + 5;
+                                }
+                              });
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                    
+                    const SizedBox(height: 16),
+                    
+                    // Absent Threshold Card
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.05),
+                            blurRadius: 10,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: Colors.red.withOpacity(0.1),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(
+                                  Icons.timer_off,
+                                  color: Colors.red,
+                                  size: 20,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Mark students as absent after',
+                                      style: GoogleFonts.poppins(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w500,
+                                        color: Colors.grey[800],
+                                      ),
+                                    ),
+                                    Text(
+                                      '$_absentThresholdMinutes minutes',
+                                      style: GoogleFonts.poppins(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.red,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          Slider(
+                            value: _absentThresholdMinutes.toDouble(),
+                            min: _lateThresholdMinutes + 5.0, // Always at least 5 min after late threshold
+                            max: 120,
+                            divisions: 23, // 5-minute increments (5, 10, 15, ... 120)
+                            label: '$_absentThresholdMinutes min',
+                            activeColor: Colors.red,
+                            inactiveColor: Colors.red.withOpacity(0.2),
+                            onChanged: (value) {
+                              setState(() {
+                                _absentThresholdMinutes = value.toInt();
+                              });
+                            },
                           ),
                         ],
                       ),

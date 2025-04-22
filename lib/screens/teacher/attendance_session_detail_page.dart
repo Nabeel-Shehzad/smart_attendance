@@ -227,97 +227,202 @@ class AttendanceSessionDetailPage extends StatelessWidget {
                             '${session.endTime.difference(session.startTime).inMinutes} minutes',
                             theme,
                           ),
+                          const SizedBox(height: 12),
+                          _buildInfoRow(
+                            Icons.timer_outlined,
+                            'Attendance Thresholds',
+                            'Late: ${session.lateThresholdMinutes} min | Absent: ${session.absentThresholdMinutes} min',
+                            theme,
+                          ),
                         ],
                       ),
                     ),
-                    if (isActive)
+                    if (isActive) ...[
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                        child: OutlinedButton.icon(
-                          onPressed: () async {
-                            final confirm = await showDialog<bool>(
-                              context: context,
-                              builder: (context) => AlertDialog(
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(16),
-                                ),
-                                title: Text(
-                                  'End Session?',
+                        child: Row(
+                          children: [
+                            // Send Signal Button (NEW)
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: session.signalTime != null
+                                    ? null // Disable if signal already sent
+                                    : () async {
+                                        final confirm = await showDialog<bool>(
+                                          context: context,
+                                          builder: (context) => AlertDialog(
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius: BorderRadius.circular(16),
+                                            ),
+                                            title: Text(
+                                              'Send Attendance Signal?',
+                                              style: GoogleFonts.poppins(
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                            content: Text(
+                                              'This will notify all students to mark their attendance. Students will be marked late after ${session.lateThresholdMinutes} minutes and absent after ${session.absentThresholdMinutes} minutes.',
+                                              style: GoogleFonts.poppins(),
+                                            ),
+                                            actions: [
+                                              TextButton(
+                                                onPressed: () => Navigator.pop(context, false),
+                                                child: Text(
+                                                  'Cancel',
+                                                  style: GoogleFonts.poppins(),
+                                                ),
+                                              ),
+                                              TextButton(
+                                                onPressed: () => Navigator.pop(context, true),
+                                                style: TextButton.styleFrom(
+                                                  foregroundColor: theme.primaryColor,
+                                                ),
+                                                child: Text(
+                                                  'Send Signal',
+                                                  style: GoogleFonts.poppins(
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        );
+
+                                        if (confirm == true) {
+                                          final success = await attendanceProvider.sendAttendanceSignal(sessionId);
+
+                                          if (context.mounted) {
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                  success
+                                                      ? 'Attendance signal sent successfully'
+                                                      : 'Failed to send signal: ${attendanceProvider.error}',
+                                                  style: GoogleFonts.poppins(),
+                                                ),
+                                                backgroundColor: success ? Colors.green : Colors.red,
+                                                behavior: SnackBarBehavior.floating,
+                                                shape: RoundedRectangleBorder(
+                                                  borderRadius: BorderRadius.circular(10),
+                                                ),
+                                                margin: const EdgeInsets.all(10),
+                                              ),
+                                            );
+                                          }
+                                        }
+                                      },
+                                icon: const Icon(Icons.send_rounded),
+                                label: Text(
+                                  session.signalTime != null ? 'Signal Sent' : 'Send Signal',
                                   style: GoogleFonts.poppins(
-                                    fontWeight: FontWeight.w600,
+                                    fontWeight: FontWeight.w500,
                                   ),
                                 ),
-                                content: Text(
-                                  'Students will no longer be able to mark their attendance once the session is ended.',
-                                  style: GoogleFonts.poppins(),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: theme.primaryColor,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 12,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
                                 ),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () => Navigator.pop(context, false),
-                                    child: Text(
-                                      'Cancel',
-                                      style: GoogleFonts.poppins(),
-                                    ),
-                                  ),
-                                  TextButton(
-                                    onPressed: () => Navigator.pop(context, true),
-                                    style: TextButton.styleFrom(
-                                      foregroundColor: Colors.red,
-                                    ),
-                                    child: Text(
-                                      'End Session',
-                                      style: GoogleFonts.poppins(
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ),
-                                ],
                               ),
-                            );
-
-                            if (confirm == true) {
-                              final success = await attendanceProvider.endAttendanceSession(sessionId);
-
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      success
-                                          ? 'Session ended successfully'
-                                          : 'Failed to end session: ${attendanceProvider.error}',
-                                      style: GoogleFonts.poppins(),
+                            ),
+                            const SizedBox(width: 12),
+                            // End Session Button (EXISTING)
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () async {
+                                  final confirm = await showDialog<bool>(
+                                    context: context,
+                                    builder: (context) => AlertDialog(
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(16),
+                                      ),
+                                      title: Text(
+                                        'End Session?',
+                                        style: GoogleFonts.poppins(
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      content: Text(
+                                        'Students will no longer be able to mark their attendance once the session is ended.',
+                                        style: GoogleFonts.poppins(),
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () => Navigator.pop(context, false),
+                                          child: Text(
+                                            'Cancel',
+                                            style: GoogleFonts.poppins(),
+                                          ),
+                                        ),
+                                        TextButton(
+                                          onPressed: () => Navigator.pop(context, true),
+                                          style: TextButton.styleFrom(
+                                            foregroundColor: Colors.red,
+                                          ),
+                                          child: Text(
+                                            'End Session',
+                                            style: GoogleFonts.poppins(
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
                                     ),
-                                    backgroundColor: success ? Colors.green : Colors.red,
-                                    behavior: SnackBarBehavior.floating,
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                    margin: const EdgeInsets.all(10),
+                                  );
+
+                                  if (confirm == true) {
+                                    final success = await attendanceProvider.endAttendanceSession(sessionId);
+
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            success
+                                                ? 'Session ended successfully'
+                                                : 'Failed to end session: ${attendanceProvider.error}',
+                                            style: GoogleFonts.poppins(),
+                                          ),
+                                          backgroundColor: success ? Colors.green : Colors.red,
+                                          behavior: SnackBarBehavior.floating,
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(10),
+                                          ),
+                                          margin: const EdgeInsets.all(10),
+                                        ),
+                                      );
+                                    }
+                                  }
+                                },
+                                icon: const Icon(Icons.stop_circle_outlined),
+                                label: Text(
+                                  'End Session',
+                                  style: GoogleFonts.poppins(
+                                    fontWeight: FontWeight.w500,
                                   ),
-                                );
-                              }
-                            }
-                          },
-                          icon: const Icon(Icons.stop_circle_outlined),
-                          label: Text(
-                            'End Session',
-                            style: GoogleFonts.poppins(
-                              fontWeight: FontWeight.w500,
+                                ),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.red,
+                                  side: const BorderSide(color: Colors.red),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 12,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                ),
+                              ),
                             ),
-                          ),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.red,
-                            side: const BorderSide(color: Colors.red),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 24,
-                              vertical: 12,
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
+                          ],
                         ),
                       ),
+                    ],
                   ],
                 ),
               ),

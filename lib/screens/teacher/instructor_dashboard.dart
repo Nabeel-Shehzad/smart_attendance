@@ -3,8 +3,10 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/course_provider.dart';
+import '../../providers/notification_provider.dart';
 import 'add_course_page.dart';
 import 'course_detail_page.dart';
+import '../notification_settings_page.dart';
 
 class InstructorDashboard extends StatefulWidget {
   const InstructorDashboard({super.key});
@@ -14,6 +16,15 @@ class InstructorDashboard extends StatefulWidget {
 }
 
 class _InstructorDashboardState extends State<InstructorDashboard> {
+  @override
+  void initState() {
+    super.initState();
+    // Initialize notifications when the dashboard loads
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Provider.of<NotificationProvider>(context, listen: false).initialize();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final authProvider = Provider.of<AuthProvider>(context);
@@ -191,10 +202,12 @@ class _InstructorDashboardState extends State<InstructorDashboard> {
                               child: const Icon(
                                 Icons.add_rounded,
                                 color: Colors.white,
-                                size: 24,
+                                size: 20,
                               ),
                             ),
-                            const SizedBox(width: 15),
+                            const SizedBox(
+                              width: 10,
+                            ),
                             Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
@@ -208,6 +221,60 @@ class _InstructorDashboardState extends State<InstructorDashboard> {
                                 ),
                                 Text(
                                   'Add a new course to your dashboard',
+                                  style: GoogleFonts.poppins(
+                                    fontSize: 13,
+                                    color: Colors.grey[600],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 15),
+                    InkWell(
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => const NotificationSettingsPage()),
+                      ),
+                      borderRadius: BorderRadius.circular(15),
+                      child: Container(
+                        padding: const EdgeInsets.all(15),
+                        decoration: BoxDecoration(
+                          color: theme.primaryColor.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(15),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: theme.primaryColor,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: const Icon(
+                                Icons.notifications_rounded,
+                                color: Colors.white,
+                                size: 18,
+                              ),
+                            ),
+                            const SizedBox(
+                              width: 10,
+                            ),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Notification Settings',
+                                  style: GoogleFonts.poppins(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.grey[800],
+                                  ),
+                                ),
+                                Text(
+                                  'Manage your notification',
                                   style: GoogleFonts.poppins(
                                     fontSize: 13,
                                     color: Colors.grey[600],
@@ -379,23 +446,31 @@ class _InstructorDashboardState extends State<InstructorDashboard> {
                 ),
               ),
               const Divider(height: 20),
-              Row(
-                children: [
-                  Icon(
-                    Icons.people_alt_rounded,
-                    size: 16,
-                    color: theme.primaryColor,
-                  ),
-                  const SizedBox(width: 5),
-                  Text(
-                    '$studentCount ${studentCount == 1 ? 'Student' : 'Students'}',
-                    style: GoogleFonts.poppins(
-                      fontSize: 12,
-                      color: Colors.grey[600],
-                      fontWeight: FontWeight.w500,
+              ConstrainedBox(
+                constraints: const BoxConstraints(minWidth: 0),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.people_alt_rounded,
+                      size: 16,
+                      color: theme.primaryColor,
                     ),
-                  ),
-                ],
+                    const SizedBox(width: 5),
+                    Flexible(
+                      child: Text(
+                        '$studentCount ${studentCount == 1 ? 'Student' : 'Students'}',
+                        style: GoogleFonts.poppins(
+                          fontSize: 12,
+                          color: Colors.grey[600],
+                          fontWeight: FontWeight.w500,
+                        ),  
+                        overflow: TextOverflow.ellipsis,
+                        softWrap: false,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),

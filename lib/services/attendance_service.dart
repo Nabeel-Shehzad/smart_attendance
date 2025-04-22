@@ -1,9 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import '../services/notification_service.dart';
 
 class AttendanceService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final NotificationService _notificationService = NotificationService();
 
   // Get current user ID
   String? get currentUserId => _auth.currentUser?.uid;
@@ -14,6 +16,8 @@ class AttendanceService {
     required String title,
     required DateTime startTime,
     required DateTime endTime,
+    int lateThresholdMinutes = 15, // Default to 15 minutes
+    int absentThresholdMinutes = 30, // Default to 30 minutes
   }) async {
     if (currentUserId == null) {
       throw Exception('User not authenticated');
@@ -40,6 +44,9 @@ class AttendanceService {
       'attendees': [],
       'createdAt': FieldValue.serverTimestamp(),
       'createdBy': currentUserId,
+      'signalTime': null, // Initialize signal time as null
+      'lateThresholdMinutes': lateThresholdMinutes,
+      'absentThresholdMinutes': absentThresholdMinutes,
     });
   }
 
@@ -70,6 +77,52 @@ class AttendanceService {
       'isActive': false,
       'updatedAt': FieldValue.serverTimestamp(),
     });
+  }
+
+  // Send attendance signal to students
+  Future<void> sendAttendanceSignal(String sessionId) async {
+    // Record the signal time
+    final now = DateTime.now();
+    await _firestore
+        .collection('attendance_sessions')
+        .doc(sessionId)
+        .update({
+      'signalTime': Timestamp.fromDate(now),
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+    
+    // Get course ID for this session to send notifications
+    final sessionDoc = await _firestore
+        .collection('attendance_sessions')
+        .doc(sessionId)
+        .get();
+        
+    if (sessionDoc.exists) {
+      final sessionData = sessionDoc.data() as Map<String, dynamic>;
+      final courseId = sessionData['courseId'] as String;
+      final title = 'Attendance Required';
+      final message = 'Your instructor has requested attendance for ${sessionData['title']}';
+      
+      // Create a notification in Firestore
+      await _firestore.collection('notifications').add({
+        'type': 'attendance_signal',
+        'courseId': courseId,
+        'sessionId': sessionId,
+        'title': title,
+        'message': message,
+        'sentAt': Timestamp.fromDate(now),
+        'read': false,
+        'targetRole': 'student'
+      });
+      
+      // Send actual push notifications to student devices
+      await _notificationService.sendAttendanceNotificationToCourse(
+        courseId,
+        sessionId,
+        title,
+        message
+      );
+    }
   }
 
   // Mark attendance for a student
@@ -103,6 +156,29 @@ class AttendanceService {
       throw Exception('Student attendance already marked');
     }
     
+    // Get the late and absent thresholds from the session
+    final lateThresholdMinutes = sessionData['lateThresholdMinutes'] ?? 15;
+    final absentThresholdMinutes = sessionData['absentThresholdMinutes'] ?? 30;
+    
+    // Determine attendance status based on signal time
+    String status = 'present';
+    final signalTime = sessionData['signalTime'] != null 
+        ? (sessionData['signalTime'] as Timestamp).toDate() 
+        : null;
+    
+    if (signalTime != null) {
+      final now = DateTime.now();
+      final difference = now.difference(signalTime);
+      
+      // Use the dynamic thresholds from the session
+      if (difference.inMinutes > absentThresholdMinutes) {
+        status = 'absent';
+      } 
+      else if (difference.inMinutes > lateThresholdMinutes) {
+        status = 'late';
+      }
+    }
+    
     // Mark attendance
     await _firestore
         .collection('attendance_sessions')
@@ -115,9 +191,35 @@ class AttendanceService {
           'markedAt': Timestamp.now(),
           'verificationMethod': verificationMethod,
           'verificationData': verificationData,
+          'status': status, // Add attendance status
+          'responseTime': Timestamp.now(),
         }
       ]),
       'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  // Get all notifications for the current user based on their role
+  Stream<QuerySnapshot> getNotifications() {
+    if (currentUserId == null) {
+      throw Exception('User not authenticated');
+    }
+    
+    // First determine user's role
+    return _firestore
+        .collection('notifications')
+        .where('targetRole', isEqualTo: 'student')
+        .orderBy('sentAt', descending: true)
+        .snapshots();
+  }
+  
+  // Mark notification as read
+  Future<void> markNotificationAsRead(String notificationId) async {
+    await _firestore
+        .collection('notifications')
+        .doc(notificationId)
+        .update({
+      'read': true,
     });
   }
 }

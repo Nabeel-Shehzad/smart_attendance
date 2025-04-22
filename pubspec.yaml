@@ -26,6 +26,8 @@ dependencies:
   firebase_auth: ^5.5.1
   cloud_firestore: ^5.6.5
   firebase_storage: ^12.4.4
+  firebase_messaging: ^15.2.5  # Added for push notifications
+  flutter_local_notifications: ^19.1.0  # Added for local notifications
   image_picker: ^1.0.4
   http: ^1.1.0
   dio: ^5.3.2

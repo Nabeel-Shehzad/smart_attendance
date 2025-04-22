@@ -8,11 +8,13 @@ class AuthProvider extends ChangeNotifier {
   User? _user;
   String? _userRole;
   bool _isLoading = false;
+  bool _isInitialized = false;
   Map<String, dynamic>? _userData;
 
   User? get user => _user;
   String? get userRole => _userRole;
   bool get isLoading => _isLoading;
+  bool get isInitialized => _isInitialized;
   Map<String, dynamic>? get userData => _userData;
 
   AuthProvider() {
@@ -20,30 +22,62 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> _init() async {
-    // Check if user is already authenticated
+    _isLoading = true;
+    
+    // Listen to auth state changes
+    _authService.authStateChanges.listen((User? firebaseUser) async {
+      if (firebaseUser != null && _user?.uid != firebaseUser.uid) {
+        // User logged in or changed
+        _user = firebaseUser;
+        _userRole = await _authService.getUserRole();
+        _userData = await _authService.getUserData();
+        
+        // Save authentication state
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('isLoggedIn', true);
+        await prefs.setString('userRole', _userRole ?? '');
+        
+        notifyListeners();
+      } else if (firebaseUser == null && _user != null) {
+        // User logged out
+        _user = null;
+        _userRole = null;
+        _userData = null;
+        
+        notifyListeners();
+      }
+    });
+
+    // Check if user is already authenticated with Firebase
     _user = _authService.currentUser;
     
     if (_user != null) {
-      // Get user role and data from Firestore
+      // Get user role and data
       _userRole = await _authService.getUserRole();
       _userData = await _authService.getUserData();
-      
-      // Save authentication state to SharedPreferences
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('isLoggedIn', true);
-      await prefs.setString('userRole', _userRole ?? '');
     } else {
-      // Check if we have saved login info
-      final prefs = await SharedPreferences.getInstance();
-      final isLoggedIn = prefs.getBool('isLoggedIn') ?? false;
+      // Try to perform automatic login if we have stored credentials
+      final hasCredentials = await _authService.hasStoredCredentials();
       
-      if (isLoggedIn) {
-        // User was previously logged in but Firebase token expired
-        // We'll need to wait for Firebase to restore the session
-        _userRole = prefs.getString('userRole');
+      if (hasCredentials) {
+        try {
+          final userCredential = await _authService.tryAutoLogin();
+          if (userCredential != null) {
+            _user = userCredential.user;
+            _userRole = await _authService.getUserRole();
+            _userData = await _authService.getUserData();
+          }
+        } catch (e) {
+          // Auto-login failed, clear preferences
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setBool('isLoggedIn', false);
+          await prefs.remove('userRole');
+        }
       }
     }
     
+    _isLoading = false;
+    _isInitialized = true;
     notifyListeners();
   }
 
@@ -66,6 +100,14 @@ class AuthProvider extends ChangeNotifier {
       
       _user = credentials.user;
       _userRole = 'student';
+      
+      // Store credentials securely for automatic login
+      await _authService.signIn(email: email, password: password);
+      
+      // Save authentication state to SharedPreferences
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('isLoggedIn', true);
+      await prefs.setString('userRole', _userRole ?? '');
     } finally {
       _isLoading = false;
       notifyListeners();
@@ -93,6 +135,14 @@ class AuthProvider extends ChangeNotifier {
       
       _user = credentials.user;
       _userRole = 'instructor';
+      
+      // Store credentials securely for automatic login
+      await _authService.signIn(email: email, password: password);
+      
+      // Save authentication state to SharedPreferences
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('isLoggedIn', true);
+      await prefs.setString('userRole', _userRole ?? '');
     } finally {
       _isLoading = false;
       notifyListeners();
@@ -102,6 +152,7 @@ class AuthProvider extends ChangeNotifier {
   Future<void> signIn({
     required String email,
     required String password,
+    bool rememberMe = true,
   }) async {
     try {
       _isLoading = true;
@@ -110,6 +161,7 @@ class AuthProvider extends ChangeNotifier {
       final credentials = await _authService.signIn(
         email: email,
         password: password,
+        rememberCredentials: rememberMe,
       );
       
       _user = credentials.user;
@@ -127,15 +179,20 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> signOut() async {
+    _isLoading = true;
+    notifyListeners();
+    
     await _authService.signOut();
     _user = null;
     _userRole = null;
+    _userData = null;
     
     // Clear authentication state from SharedPreferences
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('isLoggedIn', false);
     await prefs.remove('userRole');
     
+    _isLoading = false;
     notifyListeners();
   }
 }
