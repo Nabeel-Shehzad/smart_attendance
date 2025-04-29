@@ -10,9 +10,9 @@ import '../../providers/auth_provider.dart';
 import '../../providers/attendance_provider.dart';
 import '../../providers/course_provider.dart';
 import '../../providers/face_recognition_provider.dart';
-import '../../providers/ble_provider.dart'; // Add BLE provider import
+import '../../providers/wifi_provider.dart' as wifi_provider;
 import '../../models/attendance_session.dart';
-import '../../widgets/ble_status_indicator.dart'; // Add the BleStatusIndicator import
+import '../../widgets/wifi_status_indicator.dart' as wifi_indicator;
 
 class StudentAttendancePage extends StatefulWidget {
   const StudentAttendancePage({Key? key}) : super(key: key);
@@ -21,16 +21,18 @@ class StudentAttendancePage extends StatefulWidget {
   State<StudentAttendancePage> createState() => _StudentAttendancePageState();
 }
 
-class _StudentAttendancePageState extends State<StudentAttendancePage> with SingleTickerProviderStateMixin {
+class _StudentAttendancePageState extends State<StudentAttendancePage>
+    with SingleTickerProviderStateMixin {
   late TabController _tabController;
   final ScrollController _scrollController = ScrollController();
   int _selectedTabIndex = 0;
 
-  // Add scanning state and BLE detection states
+  // Add scanning state and WiFi detection states
   bool _isScanning = false;
-  Timer? _bleScanTimer;
-  Map<String, bool> _bleSignalDetectedMap = {}; // Maps sessionId -> detected status
-  
+  Timer? _wifiScanTimer;
+  Map<String, bool> _wifiSignalDetectedMap =
+      {}; // Maps sessionId -> detected status
+
   @override
   void initState() {
     super.initState();
@@ -46,50 +48,203 @@ class _StudentAttendancePageState extends State<StudentAttendancePage> with Sing
         });
       }
     });
-    
-    // Start background BLE scanning when page loads
+
+    // Start background WiFi scanning when page loads
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _startBackgroundBleScanning();
+      _startBackgroundWifiScanning();
     });
   }
 
   @override
   void dispose() {
-    _stopBleScan();
+    _stopWifiScan();
     _tabController.dispose();
     _scrollController.dispose();
-    _bleScanTimer?.cancel();
+    _wifiScanTimer?.cancel();
     super.dispose();
   }
+
+  // Build a WiFi status indicator widget
+  Widget _buildWifiStatusIndicator(wifi_provider.WifiConnectionStatus status, String sessionId) {
+    // Convert the provider's status to the widget's status enum
+    final widgetStatus = _convertToWidgetStatus(status);
+    
+    return wifi_indicator.WifiStatusIndicator(
+      status: widgetStatus,
+      sessionId: sessionId,
+      message: _getStatusMessage(status),
+      onRetry: () => _retryWifiConnection(sessionId),
+    );
+  }
   
-  // Start background BLE scanning
-  void _startBackgroundBleScanning() {
+  // Convert provider status to widget status
+  wifi_indicator.WifiConnectionStatus _convertToWidgetStatus(wifi_provider.WifiConnectionStatus status) {
+    switch (status) {
+      case wifi_provider.WifiConnectionStatus.searching:
+        return wifi_indicator.WifiConnectionStatus.searching;
+      case wifi_provider.WifiConnectionStatus.connected:
+        return wifi_indicator.WifiConnectionStatus.connected;
+      case wifi_provider.WifiConnectionStatus.signalDetected:
+        return wifi_indicator.WifiConnectionStatus.connected;
+      case wifi_provider.WifiConnectionStatus.error:
+        return wifi_indicator.WifiConnectionStatus.error;
+      case wifi_provider.WifiConnectionStatus.disconnected:
+        return wifi_indicator.WifiConnectionStatus.notConnected;
+      default:
+        return wifi_indicator.WifiConnectionStatus.searching;
+    }
+  }
+  
+  // Get status message based on WiFi status
+  String _getStatusMessage(wifi_provider.WifiConnectionStatus status) {
+    switch (status) {
+      case wifi_provider.WifiConnectionStatus.searching:
+        return 'Searching for instructor WiFi signal...';
+      case wifi_provider.WifiConnectionStatus.connected:
+        return 'Connected to WiFi';
+      case wifi_provider.WifiConnectionStatus.signalDetected:
+        return 'Instructor WiFi signal detected!';
+      case wifi_provider.WifiConnectionStatus.error:
+        return 'Error connecting to WiFi';
+      case wifi_provider.WifiConnectionStatus.disconnected:
+        return 'Not connected to WiFi';
+      default:
+        return 'Checking WiFi status...';
+    }
+  }
+  
+  // Retry WiFi connection
+  void _retryWifiConnection(String sessionId) {
+    final wifiProvider = Provider.of<wifi_provider.WifiProvider>(context, listen: false);
+    wifiProvider.stopScanning().then((_) {
+      Future.delayed(Duration(milliseconds: 500), () {
+        wifiProvider.startScanningForSignals(
+          sessionId: sessionId,
+          scanDuration: 15,
+        );
+      });
+    });
+  }
+  
+  // Start background WiFi scanning
+  void _startBackgroundWifiScanning() {
     // First check if we're already scanning
     if (_isScanning) return;
-    
-    final bleProvider = Provider.of<BleProvider>(context, listen: false);
-    
+
+    final wifiProvider = Provider.of<wifi_provider.WifiProvider>(
+      context,
+      listen: false,
+    );
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final studentId = authProvider.user?.uid ?? '';
+
     // Request permissions first
-    bleProvider.checkAndRequestPermissions().then((hasPermissions) {
+    wifiProvider.checkAndRequestPermissions().then((hasPermissions) {
       if (hasPermissions) {
         setState(() {
           _isScanning = true;
         });
-        
-        // Start scanning for BLE signals
-        bleProvider.startScanningForSignals(scanDuration: 15).then((_) {
+
+        // First, get active sessions from Firestore to get their session IDs
+        _getActiveSessionIdsForStudent(studentId).then((sessionIds) {
+          if (sessionIds.isNotEmpty) {
+            print(
+              "📱 Found ${sessionIds.length} active sessions for scanning: $sessionIds",
+            );
+
+            // If we have session IDs, fetch the teacher WiFi info for each session
+            for (final sessionId in sessionIds) {
+              FirebaseFirestore.instance
+                  .collection('attendance_signals')
+                  .doc(sessionId)
+                  .get()
+                  .then((signalDoc) {
+                    if (signalDoc.exists && signalDoc.data() != null) {
+                      final data = signalDoc.data()!;
+                      final teacherWifiInfo = {
+                        'networkName': data['wifiName'] ?? 'Unknown',
+                        'networkId': data['networkId'] ?? '',
+                        'bssid': data['bssid'] ?? '',
+                      };
+
+                      print("📱 Teacher WiFi details for matching:");
+                      print("   - Network: ${teacherWifiInfo['networkName']}");
+                      print("   - ID: ${teacherWifiInfo['networkId']}");
+                      print("   - BSSID: ${teacherWifiInfo['bssid']}");
+
+                      // Start scanning with the specific session ID
+                      wifiProvider
+                          .startScanningForSignals(
+                            sessionId: sessionId,
+                            scanDuration: 15,
+                          )
+                          .then((_) {
+                            // Update UI if signal is detected
+                            if (wifiProvider.status ==
+                                wifi_provider
+                                    .WifiConnectionStatus
+                                    .signalDetected) {
+                              setState(() {
+                                _wifiSignalDetectedMap[sessionId] = true;
+                              });
+                            }
+                          });
+                    }
+                  });
+            }
+          }
+
           // Set up a timer to periodically check for signals
-          _bleScanTimer = Timer.periodic(Duration(seconds: 15), (_) {
+          _wifiScanTimer = Timer.periodic(Duration(seconds: 30), (_) {
             if (mounted) {
-              bleProvider.stopScanning().then((_) {
-                // Small delay before starting next scan to avoid issues
-                Future.delayed(Duration(milliseconds: 500), () {
-                  if (mounted) {
-                    bleProvider.startScanningForSignals(scanDuration: 15);
-                    
-                    // After each scan, update the signal detection state
-                    _updateDetectedSignals(bleProvider);
-                  }
+              _getActiveSessionIdsForStudent(studentId).then((sessionIds) {
+                wifiProvider.stopScanning().then((_) {
+                  // Small delay before starting next scan to avoid issues
+                  Future.delayed(Duration(milliseconds: 500), () {
+                    if (mounted) {
+                      if (sessionIds.isNotEmpty) {
+                        for (final sessionId in sessionIds) {
+                          wifiProvider
+                              .startScanningForSignals(
+                                sessionId: sessionId,
+                                scanDuration: 15,
+                              )
+                              .then((_) {
+                                // Update UI if signal is detected
+                                if (wifiProvider.status ==
+                                    wifi_provider
+                                        .WifiConnectionStatus
+                                        .signalDetected) {
+                                  setState(() {
+                                    _wifiSignalDetectedMap[sessionId] = true;
+                                  });
+                                }
+                              });
+                        }
+                      } else {
+                        wifiProvider
+                            .startScanningForSignals(scanDuration: 15)
+                            .then((_) {
+                              // Handle the case when no specific session ID is provided
+                              if (wifiProvider.status ==
+                                      wifi_provider
+                                          .WifiConnectionStatus
+                                          .signalDetected &&
+                                  wifiProvider.detectedSignal != null &&
+                                  wifiProvider.detectedSignal!['sessionId'] !=
+                                      null) {
+                                setState(() {
+                                  _wifiSignalDetectedMap[wifiProvider
+                                          .detectedSignal!['sessionId']] =
+                                      true;
+                                });
+                              }
+                            });
+                      }
+                      // After each scan, update the signal detection state
+                      _updateDetectedSignals(wifiProvider);
+                    }
+                  });
                 });
               });
             }
@@ -99,24 +254,61 @@ class _StudentAttendancePageState extends State<StudentAttendancePage> with Sing
     });
   }
 
-  // Update which sessions have detected BLE signals
-  void _updateDetectedSignals(BleProvider bleProvider) {
-    if (bleProvider.status == BleStatus.signalDetected && bleProvider.detectedSignal != null) {
-      final detectedSessionId = bleProvider.detectedSignal!['sessionId'];
+  // Helper method to get active session IDs for a student
+  Future<List<String>> _getActiveSessionIdsForStudent(String studentId) async {
+    try {
+      // Get courses the student is enrolled in
+      final coursesSnapshot =
+          await FirebaseFirestore.instance
+              .collection('courses')
+              .where('enrolledStudents', arrayContains: studentId)
+              .get();
+
+      final courseIds = coursesSnapshot.docs.map((doc) => doc.id).toList();
+
+      if (courseIds.isEmpty) {
+        return [];
+      }
+
+      // Get active attendance sessions for these courses
+      final sessionsSnapshot =
+          await FirebaseFirestore.instance
+              .collection('attendance_sessions')
+              .where('courseId', whereIn: courseIds)
+              .where('isActive', isEqualTo: true)
+              .where('wifiSignalActive', isEqualTo: true)
+              .get();
+
+      return sessionsSnapshot.docs.map((doc) => doc.id).toList();
+    } catch (e) {
+      print("Error getting active session IDs: $e");
+      return [];
+    }
+  }
+
+  // Update which sessions have detected WiFi signals
+  void _updateDetectedSignals(wifi_provider.WifiProvider wifiProvider) {
+    if (wifiProvider.status ==
+            wifi_provider.WifiConnectionStatus.signalDetected &&
+        wifiProvider.detectedSignal != null) {
+      final detectedSessionId = wifiProvider.detectedSignal!['sessionId'];
       if (mounted) {
         setState(() {
-          _bleSignalDetectedMap[detectedSessionId] = true;
+          _wifiSignalDetectedMap[detectedSessionId] = true;
         });
       }
     }
   }
 
-  // Stop BLE scan when disposing
-  void _stopBleScan() {
+  // Stop WiFi scan when disposing
+  void _stopWifiScan() {
     if (_isScanning) {
-      final bleProvider = Provider.of<BleProvider>(context, listen: false);
-      bleProvider.stopScanning();
-      _bleScanTimer?.cancel();
+      final wifiProvider = Provider.of<wifi_provider.WifiProvider>(
+        context,
+        listen: false,
+      );
+      wifiProvider.stopScanning();
+      _wifiScanTimer?.cancel();
       _isScanning = false;
     }
   }
@@ -236,9 +428,10 @@ class _StudentAttendancePageState extends State<StudentAttendancePage> with Sing
                     Icon(
                       Icons.timer_outlined,
                       size: 20,
-                      color: _selectedTabIndex == 0
-                          ? Theme.of(context).primaryColor
-                          : Colors.grey[600],
+                      color:
+                          _selectedTabIndex == 0
+                              ? Theme.of(context).primaryColor
+                              : Colors.grey[600],
                     ),
                     const SizedBox(width: 8),
                     const Text('Active'),
@@ -252,9 +445,10 @@ class _StudentAttendancePageState extends State<StudentAttendancePage> with Sing
                     Icon(
                       Icons.history_outlined,
                       size: 20,
-                      color: _selectedTabIndex == 1
-                          ? Theme.of(context).primaryColor
-                          : Colors.grey[600],
+                      color:
+                          _selectedTabIndex == 1
+                              ? Theme.of(context).primaryColor
+                              : Colors.grey[600],
                     ),
                     const SizedBox(width: 8),
                     const Text('History'),
@@ -263,10 +457,7 @@ class _StudentAttendancePageState extends State<StudentAttendancePage> with Sing
               ),
             ],
           ),
-          Divider(
-            height: 1,
-            color: Colors.grey[200],
-          ),
+          Divider(height: 1, color: Colors.grey[200]),
         ],
       ),
     );
@@ -414,8 +605,8 @@ class _StudentAttendancePageState extends State<StudentAttendancePage> with Sing
   }
 
   Widget _buildSessionsList(
-    BuildContext context, 
-    List<AttendanceSession> sessions, 
+    BuildContext context,
+    List<AttendanceSession> sessions,
     List<QueryDocumentSnapshot> courses,
     bool isActiveTab,
   ) {
@@ -429,34 +620,46 @@ class _StudentAttendancePageState extends State<StudentAttendancePage> with Sing
           orElse: () => throw Exception('Course not found'),
         );
         final courseData = courseDoc.data() as Map<String, dynamic>;
-        
+
         return _SessionCard(
           session: session,
           courseName: courseData['courseName'] ?? 'Unknown Course',
           courseCode: courseData['courseCode'] ?? '',
           isActiveTab: isActiveTab,
-          bleSignalDetected: _bleSignalDetectedMap[session.id] ?? false, // Pass BLE signal detection state
+          wifiSignalDetected:
+              _wifiSignalDetectedMap[session.id] ??
+              false, // Pass WiFi signal detection state
         );
       },
     );
   }
 
-  void _showBleAttendanceDialog(
-    BuildContext context, 
-    String sessionId, 
-    String studentId, 
-    String studentName, 
-    String courseId
+  void _showWifiAttendanceDialog(
+    BuildContext context,
+    String sessionId,
+    String studentId,
+    String studentName,
+    String courseId,
   ) {
-    final attendanceProvider = Provider.of<AttendanceProvider>(context, listen: false);
-    final faceRecognitionProvider = Provider.of<FaceRecognitionProvider>(context, listen: false);
-    final bleProvider = Provider.of<BleProvider>(context, listen: false);
+    final attendanceProvider = Provider.of<AttendanceProvider>(
+      context,
+      listen: false,
+    );
+    final faceRecognitionProvider = Provider.of<FaceRecognitionProvider>(
+      context,
+      listen: false,
+    );
+    final wifiProvider = Provider.of<wifi_provider.WifiProvider>(
+      context,
+      listen: false,
+    );
 
     // State variables
     bool isScanning = false;
-    bool bleDetected = false;
+    bool wifiDetected = false;
     bool isFaceVerified = false;
-    BleConnectionStatus bleStatus = BleConnectionStatus.searching;
+    wifi_provider.WifiConnectionStatus wifiStatus =
+        wifi_provider.WifiConnectionStatus.searching;
     String statusMessage = 'Searching for instructor signal...';
     Map<String, dynamic>? faceVerificationResult;
     Timer? statusCheckTimer;
@@ -464,659 +667,660 @@ class _StudentAttendancePageState extends State<StudentAttendancePage> with Sing
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setState) {
-          // Start BLE scanning when dialog opens
-          if (!isScanning) {
-            setState(() {
-              isScanning = true;
-              bleStatus = BleConnectionStatus.searching;
-              statusMessage = 'Searching for instructor signal...';
-            });
+      builder:
+          (dialogContext) => StatefulBuilder(
+            builder: (context, setState) {
+              // Start WiFi scanning when dialog opens
+              if (!isScanning) {
+                setState(() {
+                  isScanning = true;
+                  wifiStatus = wifi_provider.WifiConnectionStatus.searching;
+                  statusMessage = 'Searching for instructor signal...';
+                });
 
-            // Request permissions and start scanning
-            bleProvider.checkAndRequestPermissions().then((hasPermissions) {
-              if (hasPermissions) {
-                bleProvider.startScanningForSignals(sessionId: sessionId).then((success) {
-                  if (!success && context.mounted) {
-                    setState(() {
-                      bleStatus = BleConnectionStatus.error;
-                      statusMessage = 'Failed to start BLE scanning: ${bleProvider.errorMessage}';
+                // Request permissions and start scanning
+                wifiProvider.checkAndRequestPermissions().then((
+                  hasPermissions,
+                ) {
+                  if (hasPermissions) {
+                    wifiProvider.startScanningForSignals(sessionId: sessionId).then((_) {
+                      // Check for error status after scanning starts
+                      if (wifiProvider.status == wifi_provider.WifiConnectionStatus.error && context.mounted) {
+                        setState(() {
+                          wifiStatus = wifi_provider.WifiConnectionStatus.error;
+                          statusMessage =
+                              'Failed to start WiFi scanning: ${wifiProvider.errorMessage}';
+                        });
+
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              'Failed to start WiFi scanning: ${wifiProvider.errorMessage}',
+                              style: GoogleFonts.poppins(),
+                            ),
+                            backgroundColor: Colors.red,
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      } else {
+                        // Log that scanning started
+                        print(
+                          '🔍 Started scanning for WiFi signal with session ID: $sessionId',
+                        );
+
+                        // Successfully started scanning, set up periodic checks
+                        statusCheckTimer = Timer.periodic(Duration(seconds: 2), (
+                          timer,
+                        ) async {
+                          if (!context.mounted) {
+                            timer.cancel();
+                            return;
+                          }
+
+                          // Check for signal detection
+                          final signal = wifiProvider.detectedSignal;
+                          final status = wifiProvider.status;
+
+                          // Log current scanning status
+                          print(
+                            '🔄 WiFi Status: $status | Signal detected: ${signal != null}',
+                          );
+
+                          // Check for WiFi signal detection directly from the provider
+                          bool foundSignal = false;
+                          if (status == wifi_provider.WifiConnectionStatus.signalDetected) {
+                            foundSignal = true;
+                            
+                            // Extract session details from the signal if available
+                            if (signal != null && signal.containsKey('sessionId')) {
+                              final detectedSessionId = signal['sessionId'];
+                              print(
+                                '✅ Found WiFi signal for session: $detectedSessionId',
+                              );
+                            }
+                          }
+                          
+                          // If signal detected, update UI and mark attendance if needed
+                          if (foundSignal) {
+                            setState(() {
+                              _wifiSignalDetectedMap[sessionId] = true;
+                            });
+                            
+                            // Cancel timer as we found the signal
+                            timer.cancel();
+                          }
+
+                          // Check Firestore for the latest attendance signal as a fallback
+                          try {
+                            final signalQuery =
+                                await FirebaseFirestore.instance
+                                    .collection('attendance_signals')
+                                    .where('sessionId', isEqualTo: sessionId)
+                                    .where(
+                                      'validUntil',
+                                      isGreaterThan:
+                                          DateTime.now().millisecondsSinceEpoch,
+                                    )
+                                    .get();
+
+                            // Also check the session document for bleSignalActive flag
+                            final sessionDoc =
+                                await FirebaseFirestore.instance
+                                    .collection('attendance_sessions')
+                                    .doc(sessionId)
+                                    .get();
+
+                            final hasValidSignal = signalQuery.docs.isNotEmpty;
+                            final sessionWifiEnabled = sessionDoc.exists && 
+                                sessionDoc.data() != null && 
+                                (sessionDoc.data() as Map<String, dynamic>).containsKey('wifiSignalActive') && 
+                                sessionDoc.data()!['wifiSignalActive'] == true;
+
+                            print(
+                              '📡 Firestore signal check: ${hasValidSignal ? "Signal active" : "No signal"} | Session WiFi enabled: $sessionWifiEnabled',
+                            );
+
+                            // Check if signal has been detected previously
+                            final hasDetectedSignal = await wifiProvider
+                                .hasDetectedSessionSignal(sessionId);
+
+                            if (context.mounted) {
+                              setState(() {
+                                // Accept a Firestore signal as a valid detection if direct WiFi detection fails
+                                // This is crucial to make the system work reliably
+                                if ((status == wifi_provider.WifiConnectionStatus.signalDetected &&
+                                        signal != null &&
+                                        signal['sessionId'] == sessionId) ||
+                                    hasDetectedSignal ||
+                                    hasValidSignal) {
+                                  setState(() {
+                                    wifiStatus = wifi_provider.WifiConnectionStatus.connected;
+                                    wifiDetected = true; // Set wifiDetected to true when signal is detected
+                                    statusMessage =
+                                        'Connected to instructor WiFi signal! You can now verify your identity.';
+                                  });
+
+                                  // Record the successful detection in our local storage
+                                  // to remember it for future reference
+                                  if (!_wifiSignalDetectedMap.containsKey(
+                                    sessionId,
+                                  )) {
+                                    _wifiSignalDetectedMap[sessionId] = true;
+                                  }
+
+                                  // Also record the detection in WifiProvider's storage
+                                  if (hasValidSignal &&
+                                      signalQuery.docs.isNotEmpty) {
+                                    final signalData =
+                                        signalQuery.docs.first.data();
+                                    wifiProvider.recordSignalDetection(
+                                      signalData,
+                                    );
+                                    wifiProvider.addDetectedSessionId(sessionId);
+                                  }
+                                } else if (!hasValidSignal) {
+                                  setState(() {
+                                    wifiStatus = wifi_provider.WifiConnectionStatus.error;
+                                    statusMessage =
+                                        'No active WiFi signal detected. Ask instructor to enable WiFi.';
+                                  });
+                                } else {
+                                  setState(() {
+                                    wifiStatus = wifi_provider.WifiConnectionStatus.disconnected;
+                                    statusMessage =
+                                        'Signal is active but not detected. Move closer to instructor.';
+                                  });
+                                }
+                              });
+                            }
+                          } catch (e) {
+                            print('❌ Error checking Firestore signal: $e');
+                            // Don't update UI state here, just log the error
+                          }
+                        });
+                      }
                     });
-                    
+                  } else if (context.mounted) {
+                    setState(() {
+                      wifiStatus = wifi_provider.WifiConnectionStatus.error;
+                      statusMessage =
+                          'WiFi permissions are required for attendance';
+                    });
+
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
                         content: Text(
-                          'Failed to start BLE scanning: ${bleProvider.errorMessage}',
+                          'WiFi permissions required for attendance',
                           style: GoogleFonts.poppins(),
                         ),
                         backgroundColor: Colors.red,
                         behavior: SnackBarBehavior.floating,
                       ),
                     );
-                  } else {
-                    // Log that scanning started
-                    print('🔍 Started scanning for BLE signal with session ID: $sessionId');
-                    
-                    // Successfully started scanning, set up periodic checks
-                    statusCheckTimer = Timer.periodic(Duration(seconds: 2), (timer) async {
-                      if (!context.mounted) {
-                        timer.cancel();
-                        return;
-                      }
-                      
-                      // Check for signal detection
-                      final signal = bleProvider.detectedSignal;
-                      final status = bleProvider.status;
-                      
-                      // Log current scanning status
-                      print('🔄 BLE Status: $status | Signal detected: ${signal != null}');
-                      
-                      // Also check directly from scan results for device names containing session fragments
-                      final scanResults = bleProvider.scanResults;
-                      bool foundByName = false;
-                      if (scanResults.isNotEmpty) {
-                        for (final result in scanResults) {
-                          // Extract first 8 chars of session ID to match with device name
-                          final sessionFragment = sessionId.length > 8 ? sessionId.substring(0, 8) : sessionId;
-                          final deviceName = result.advertisementData.localName;
-                          
-                          // Check if device name contains our session ID fragment
-                          if (deviceName != null && deviceName.contains("SmartAttnd_$sessionFragment")) {
-                            foundByName = true;
-                            print('✅ Found BLE device with matching name: $deviceName');
-                            break;
-                          }
-                        }
-                      }
-                      
-                      // Check Firestore for the latest attendance signal as a fallback
-                      try {
-                        final signalQuery = await FirebaseFirestore.instance
-                            .collection('attendance_signals')
-                            .where('sessionId', isEqualTo: sessionId)
-                            .where('validUntil', isGreaterThan: DateTime.now().millisecondsSinceEpoch)
-                            .get();
-                        
-                        // Also check the session document for bleSignalActive flag
-                        final sessionDoc = await FirebaseFirestore.instance
-                            .collection('attendance_sessions')
-                            .doc(sessionId)
-                            .get();
-                        
-                        final hasValidSignal = signalQuery.docs.isNotEmpty;
-                        final sessionBleEnabled = sessionDoc.exists && 
-                            (sessionDoc.data() as Map<String, dynamic>?)?.containsKey('bleSignalActive') == true && 
-                            sessionDoc.data()!['bleSignalActive'] == true;
-                        
-                        print('📡 Firestore signal check: ${hasValidSignal ? "Signal active" : "No signal"} | Session BLE enabled: $sessionBleEnabled');
-                        
-                        // Check if signal has been detected previously
-                        final hasDetectedSignal = await bleProvider.hasDetectedSessionSignal(sessionId);
-                        
-                        if (context.mounted) {
-                          setState(() {
-                            // Accept a Firestore signal as a valid detection if direct BLE detection fails
-                            // This is crucial to make the system work reliably
-                            if ((status == BleStatus.signalDetected && signal != null && 
-                                signal['sessionId'] == sessionId) || foundByName || hasDetectedSignal || 
-                                (hasValidSignal && sessionBleEnabled)) {
-                                
-                              bleDetected = true;
-                              bleStatus = BleConnectionStatus.connected;
-                              statusMessage = 'Connected to instructor signal! You can now verify your identity.';
-                              
-                              // Record the successful detection in our local storage 
-                              // to remember it for future reference
-                              if (!_bleSignalDetectedMap.containsKey(sessionId)) {
-                                _bleSignalDetectedMap[sessionId] = true;
-                              }
-                              
-                              // Also record the detection in BleProvider's storage
-                              if (hasValidSignal && signalQuery.docs.isNotEmpty) {
-                                final signalData = signalQuery.docs.first.data();
-                                bleProvider.recordSignalDetection(signalData);
-                                bleProvider.addDetectedSessionId(sessionId);
-                              }
-                            } else if (!hasValidSignal && !sessionBleEnabled) {
-                              bleDetected = false;
-                              bleStatus = BleConnectionStatus.error;
-                              statusMessage = 'No active BLE signal detected. Ask instructor to enable BLE.';
-                            } else {
-                              bleDetected = false;
-                              bleStatus = BleConnectionStatus.notConnected;
-                              statusMessage = 'Signal is active but not detected. Move closer to instructor.';
-                            }
-                          });
-                        }
-                      } catch (e) {
-                        print('❌ Error checking Firestore signal: $e');
-                        // Don't update UI state here, just log the error
-                      }
-                    });
                   }
                 });
-              } else if (context.mounted) {
-                setState(() {
-                  bleStatus = BleConnectionStatus.error;
-                  statusMessage = 'Bluetooth permissions are required for attendance';
-                });
-                
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      'Bluetooth permissions required for attendance',
-                      style: GoogleFonts.poppins(),
-                    ),
-                    backgroundColor: Colors.red,
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
               }
-            });
-          }
-          
-          return WillPopScope(
-            onWillPop: () async {
-              // Clean up timer when dialog is closed
-              statusCheckTimer?.cancel();
-              bleProvider.stopScanning();
-              return true;
-            },
-            child: AlertDialog(
-              title: Text(
-                'Attendance Verification',
-                style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
-              ),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Step 1: BLE Verification with clearer indication of connection status
-                    BleStatusIndicator(
-                      status: bleStatus,
-                      sessionId: sessionId,
-                      message: statusMessage,
-                      onRetry: () {
-                        setState(() {
-                          bleStatus = BleConnectionStatus.searching;
-                          bleDetected = false;
-                          statusMessage = 'Searching for instructor signal...';
-                        });
-                        
-                        // Force a new signal check
-                        bleProvider.stopScanning().then((_) {
-                          Future.delayed(Duration(milliseconds: 500), () {
-                            if (context.mounted) {
-                              bleProvider.startScanningForSignals(courseId: courseId);
-                            }
-                          });
-                        });
-                      },
-                    ),
 
-                    const SizedBox(height: 24),
-                    
-                    // Divider with text
-                    Row(
+              return WillPopScope(
+                onWillPop: () async {
+                  // Clean up timer when dialog is closed
+                  statusCheckTimer?.cancel();
+                  wifiProvider.stopScanning();
+                  return true;
+                },
+                child: AlertDialog(
+                  title: Text(
+                    'Attendance Verification',
+                    style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+                  ),
+                  content: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Expanded(child: Divider(thickness: 1, color: Colors.grey.shade300)),
-                        Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 16),
-                          child: Text(
-                            'Step 2',
-                            style: GoogleFonts.poppins(
-                              fontSize: 14,
-                              color: Colors.grey.shade600,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ),
-                        Expanded(child: Divider(thickness: 1, color: Colors.grey.shade300)),
-                      ],
-                    ),
+                        // Step 1: WiFi Verification with clearer indication of connection status
+                        wifi_indicator.WifiStatusIndicator(
+                          status: _convertToWidgetStatus(wifiStatus),
+                          sessionId: sessionId,
+                          message: statusMessage,
+                          onRetry: () {
+                            setState(() {
+                              wifiStatus = wifi_provider.WifiConnectionStatus.searching;
+                              wifiDetected = false;
+                              statusMessage =
+                                  'Searching for instructor signal...';
+                            });
 
-                    const SizedBox(height: 16),
-
-                    // Step 2: Face Recognition (only enabled after BLE verification)
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: bleDetected ? Colors.blue.shade50 : Colors.grey.shade100,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: bleDetected ? Colors.blue.shade200 : Colors.grey.shade300,
-                          width: 1.5,
-                        ),
-                      ),
-                      child: Column(
-                        children: [
-                          // Face Recognition Icon/Status
-                          Container(
-                            width: 64,
-                            height: 64,
-                            decoration: BoxDecoration(
-                              color: bleDetected ? Colors.blue.shade100 : Colors.grey.shade200,
-                              shape: BoxShape.circle,
-                            ),
-                            child: Center(
-                              child: Icon(
-                                isFaceVerified ? Icons.check_circle : Icons.face,
-                                size: 32,
-                                color: isFaceVerified 
-                                    ? Colors.green.shade700
-                                    : (bleDetected ? Colors.blue.shade700 : Colors.grey.shade500),
-                              ),
-                            ),
-                          ),
-                          
-                          const SizedBox(height: 16),
-                          
-                          Text(
-                            isFaceVerified 
-                                ? 'Face Verification Complete'
-                                : 'Face Recognition',
-                            style: GoogleFonts.poppins(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w600,
-                              color: isFaceVerified 
-                                  ? Colors.green.shade700
-                                  : (bleDetected ? Colors.blue.shade700 : Colors.grey.shade600),
-                            ),
-                            textAlign: TextAlign.center,
-                          ),
-                          
-                          const SizedBox(height: 8),
-                          
-                          Text(
-                            bleDetected 
-                                ? (isFaceVerified 
-                                    ? 'Your identity has been verified' 
-                                    : 'Take a photo to verify your identity')
-                                : 'Complete signal detection first',
-                            style: GoogleFonts.poppins(
-                              fontSize: 14,
-                              color: bleDetected ? Colors.blue.shade700 : Colors.grey.shade500,
-                            ),
-                            textAlign: TextAlign.center,
-                          ),
-                          
-                          const SizedBox(height: 16),
-
-                          if (bleDetected && !isFaceVerified)
-                            FutureBuilder<bool>(
-                              future: faceRecognitionProvider.checkStudentImageExists(studentId),
-                              builder: (context, snapshot) {
-                                if (snapshot.connectionState == ConnectionState.waiting) {
-                                  return Center(
-                                    child: SizedBox(
-                                      width: 32, 
-                                      height: 32,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 3,
-                                        valueColor: AlwaysStoppedAnimation<Color>(Colors.blue.shade700),
-                                      ),
-                                    ),
+                            // Force a new signal check
+                            wifiProvider.stopScanning().then((_) {
+                              Future.delayed(Duration(milliseconds: 500), () {
+                                if (context.mounted) {
+                                  wifiProvider.startScanningForSignals(
+                                    sessionId: sessionId,
                                   );
                                 }
+                              });
+                            });
+                          },
+                        ),
 
-                                final hasImage = snapshot.data ?? false;
+                        const SizedBox(height: 24),
 
-                                if (!hasImage) {
-                                  return Column(
-                                    children: [
-                                      Icon(
-                                        Icons.error_outline,
-                                        size: 36,
-                                        color: Colors.orange[700],
-                                      ),
-                                      const SizedBox(height: 12),
-                                      Text(
-                                        'No profile image found',
-                                        style: GoogleFonts.poppins(
-                                          fontSize: 16,
-                                          fontWeight: FontWeight.w500,
+                        // Divider with text
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Divider(
+                                thickness: 1,
+                                color: Colors.grey.shade300,
+                              ),
+                            ),
+                            Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 16),
+                              child: Text(
+                                'Step 2',
+                                style: GoogleFonts.poppins(
+                                  fontSize: 14,
+                                  color: Colors.grey.shade600,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: Divider(
+                                thickness: 1,
+                                color: Colors.grey.shade300,
+                              ),
+                            ),
+                          ],
+                        ),
+
+                        const SizedBox(height: 16),
+
+                        // Step 2: Face Recognition (only enabled after WiFi verification)
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color:
+                                wifiDetected
+                                    ? Colors.blue.shade50
+                                    : Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color:
+                                  wifiDetected
+                                      ? Colors.blue.shade200
+                                      : Colors.grey.shade300,
+                              width: 1.5,
+                            ),
+                          ),
+                          child: Column(
+                            children: [
+                              // Face Recognition Icon/Status
+                              Container(
+                                width: 64,
+                                height: 64,
+                                decoration: BoxDecoration(
+                                  color:
+                                      wifiDetected
+                                          ? Colors.blue.shade100
+                                          : Colors.grey.shade200,
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Center(
+                                  child: Icon(
+                                    isFaceVerified
+                                        ? Icons.check_circle
+                                        : Icons.face,
+                                    size: 32,
+                                    color:
+                                        isFaceVerified
+                                            ? Colors.green.shade700
+                                            : (wifiDetected
+                                                ? Colors.blue.shade700
+                                                : Colors.grey.shade500),
+                                  ),
+                                ),
+                              ),
+
+                              const SizedBox(height: 16),
+
+                              Text(
+                                isFaceVerified
+                                    ? 'Face Verification Complete'
+                                    : 'Face Recognition',
+                                style: GoogleFonts.poppins(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600,
+                                  color:
+                                      isFaceVerified
+                                          ? Colors.green.shade700
+                                          : (wifiDetected
+                                              ? Colors.blue.shade700
+                                              : Colors.grey.shade600),
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+
+                              const SizedBox(height: 8),
+
+                              Text(
+                                wifiDetected
+                                    ? (isFaceVerified
+                                        ? 'Your identity has been verified'
+                                        : 'Take a photo to verify your identity')
+                                    : 'Complete signal detection first',
+                                style: GoogleFonts.poppins(
+                                  fontSize: 14,
+                                  color:
+                                      wifiDetected
+                                          ? Colors.blue.shade700
+                                          : Colors.grey.shade500,
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+
+                              const SizedBox(height: 16),
+
+                              if (wifiDetected && !isFaceVerified)
+                                FutureBuilder<bool>(
+                                  future: faceRecognitionProvider
+                                      .checkStudentImageExists(studentId),
+                                  builder: (context, snapshot) {
+                                    if (snapshot.connectionState ==
+                                        ConnectionState.waiting) {
+                                      return Center(
+                                        child: SizedBox(
+                                          width: 32,
+                                          height: 32,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 3,
+                                            valueColor:
+                                                AlwaysStoppedAnimation<Color>(
+                                                  Colors.blue.shade700,
+                                                ),
+                                          ),
                                         ),
-                                      ),
-                                      const SizedBox(height: 8),
-                                      Text(
-                                        'Please upload your profile image to complete verification',
-                                        style: GoogleFonts.poppins(
-                                          fontSize: 14,
-                                        ),
-                                        textAlign: TextAlign.center,
-                                      ),
-                                      const SizedBox(height: 16),
-                                      Row(
-                                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                      );
+                                    }
+
+                                    final hasImage = snapshot.data ?? false;
+
+                                    if (!hasImage) {
+                                      return Column(
                                         children: [
-                                          Expanded(
-                                            child: ElevatedButton.icon(
-                                              onPressed: () async {
-                                                final result = await faceRecognitionProvider.uploadStudentImage(ImageSource.camera);
-                                                if (result != null && context.mounted) {
-                                                  setState(() {});
-                                                }
-                                              },
-                                              icon: const Icon(Icons.camera_alt),
-                                              label: const Text('Camera')
+                                          Icon(
+                                            Icons.error_outline,
+                                            size: 36,
+                                            color: Colors.orange[700],
+                                          ),
+                                          const SizedBox(height: 12),
+                                          Text(
+                                            'No profile image found',
+                                            style: GoogleFonts.poppins(
+                                              fontSize: 16,
+                                              fontWeight: FontWeight.w500,
                                             ),
                                           ),
-                                          SizedBox(width: 8),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            'Please upload your profile image to complete verification',
+                                            style: GoogleFonts.poppins(
+                                              fontSize: 14,
+                                            ),
+                                            textAlign: TextAlign.center,
+                                          ),
+                                          const SizedBox(height: 16),
+                                          Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.spaceEvenly,
+                                            children: [
+                                              Expanded(
+                                                child: ElevatedButton.icon(
+                                                  onPressed: () async {
+                                                    final result =
+                                                        await faceRecognitionProvider
+                                                            .uploadStudentImage(
+                                                              ImageSource
+                                                                  .camera,
+                                                            );
+                                                    if (result != null &&
+                                                        context.mounted) {
+                                                      setState(() {});
+                                                    }
+                                                  },
+                                                  icon: const Icon(
+                                                    Icons.camera_alt,
+                                                  ),
+                                                  label: const Text('Camera'),
+                                                ),
+                                              ),
+                                              SizedBox(width: 8),
+                                              Expanded(
+                                                child: ElevatedButton.icon(
+                                                  onPressed: () async {
+                                                    final result =
+                                                        await faceRecognitionProvider
+                                                            .uploadStudentImage(
+                                                              ImageSource
+                                                                  .gallery,
+                                                            );
+                                                    if (result != null &&
+                                                        context.mounted) {
+                                                      setState(() {});
+                                                    }
+                                                  },
+                                                  icon: const Icon(
+                                                    Icons.photo_library,
+                                                  ),
+                                                  label: const Text('Gallery'),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      );
+                                    }
+
+                                    return Builder(
+                                      builder: (context) {
+                                        // Local state for the button
+                                        bool isVerifying = false;
+                                        
+                                        return StatefulBuilder(
+                                          builder: (context, buttonSetState) {
+                                            return ElevatedButton.icon(
+                                              onPressed: (wifiDetected && !isVerifying)
+                                                  ? () async {
+                                                      // Set loading state
+                                                      buttonSetState(() {
+                                                        isVerifying = true;
+                                                      });
+                                                      
+                                                      try {
+                                                        // Get image from camera
+                                                        final picker = ImagePicker();
+                                                        final pickedFile =
+                                                            await picker.pickImage(
+                                                              source:
+                                                                  ImageSource.camera,
+                                                              imageQuality: 80,
+                                                            );
+
+                                                        if (pickedFile != null &&
+                                                            context.mounted) {
+                                                          final imageFile = File(
+                                                            pickedFile.path,
+                                                          );
+
+                                                          // Verify face
+                                                          final result =
+                                                              await faceRecognitionProvider
+                                                                  .compareFaces(
+                                                                    studentId:
+                                                                        studentId,
+                                                                    imageFile:
+                                                                        imageFile,
+                                                                  );
+
+                                                          if (result != null &&
+                                                              result['verification_match'] ==
+                                                                  true) {
+                                                            setState(() {
+                                                              isFaceVerified = true;
+                                                              faceVerificationResult =
+                                                                  result;
+                                                            });
+                                                          } else if (context
+                                                              .mounted) {
+                                                            ScaffoldMessenger.of(
+                                                              context,
+                                                            ).showSnackBar(
+                                                              SnackBar(
+                                                                content: Text(
+                                                                  'Face verification failed. Please try again.',
+                                                                  style:
+                                                                      GoogleFonts.poppins(),
+                                                                ),
+                                                                backgroundColor:
+                                                                    Colors.red,
+                                                                behavior:
+                                                                    SnackBarBehavior
+                                                                        .floating,
+                                                              ),
+                                                            );
+                                                          }
+                                                        }
+                                                      } catch (e) {
+                                                        if (context.mounted) {
+                                                          ScaffoldMessenger.of(
+                                                            context,
+                                                          ).showSnackBar(
+                                                            SnackBar(
+                                                              content: Text(
+                                                                'Error: $e',
+                                                                style:
+                                                                    GoogleFonts.poppins(),
+                                                              ),
+                                                              backgroundColor:
+                                                                  Colors.red,
+                                                              behavior:
+                                                                  SnackBarBehavior
+                                                                      .floating,
+                                                            ),
+                                                          );
+                                                        }
+                                                      } finally {
+                                                        // Reset loading state if still mounted
+                                                        if (context.mounted) {
+                                                          buttonSetState(() {
+                                                            isVerifying = false;
+                                                          });
+                                                        }
+                                                      }
+                                                    }
+                                                  : null,
+                                              icon: isVerifying
+                                                  ? SizedBox(
+                                                      width: 20,
+                                                      height: 20,
+                                                      child: CircularProgressIndicator(
+                                                        strokeWidth: 2,
+                                                        valueColor:
+                                                            AlwaysStoppedAnimation<
+                                                                Color>(Colors.white),
+                                                      ),
+                                                    )
+                                                  : const Icon(Icons.camera_alt),
+                                              label: Text(
+                                                isVerifying
+                                                    ? 'Verifying...'
+                                                    : (wifiDetected
+                                                        ? 'Take Photo to Verify'
+                                                        : 'Connect to Signal First'),
+                                                style: GoogleFonts.poppins(),
+                                              ),
+                                              style: ElevatedButton.styleFrom(
+                                                backgroundColor: wifiDetected
+                                                    ? Theme.of(context).primaryColor
+                                                    : Colors.grey.shade300,
+                                                foregroundColor: wifiDetected
+                                                    ? Colors.white
+                                                    : Colors.grey.shade700,
+                                                minimumSize: Size(double.infinity, 48),
+                                                disabledBackgroundColor:
+                                                    Colors.grey.shade200,
+                                                disabledForegroundColor:
+                                                    Colors.grey.shade500,
+                                              ),
+                                            );
+                                          },
+                                        );
+                                      },
+                                    );
+                                  },
+                                ),
+
+                              if (isFaceVerified)
+                                Column(
+                                  children: [
+                                    Container(
+                                      padding: EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: Colors.green.shade50,
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: Colors.green.shade200,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          Icon(
+                                            Icons.check_circle,
+                                            color: Colors.green.shade700,
+                                          ),
+                                          SizedBox(width: 12),
                                           Expanded(
-                                            child: ElevatedButton.icon(
-                                              onPressed: () async {
-                                                final result = await faceRecognitionProvider.uploadStudentImage(ImageSource.gallery);
-                                                if (result != null && context.mounted) {
-                                                  setState(() {});
-                                                }
-                                              },
-                                              icon: const Icon(Icons.photo_library),
-                                              label: const Text('Gallery')
+                                            child: Text(
+                                              'Your face has been successfully verified!',
+                                              style: GoogleFonts.poppins(
+                                                fontSize: 14,
+                                                color: Colors.green.shade700,
+                                              ),
                                             ),
                                           ),
                                         ],
                                       ),
-                                    ],
-                                  );
-                                }
+                                    ),
 
-                                return ElevatedButton.icon(
-                                  onPressed: bleDetected ? () async {
-                                    try {
-                                      // Get image from camera
-                                      final picker = ImagePicker();
-                                      final pickedFile = await picker.pickImage(
-                                        source: ImageSource.camera,
-                                        imageQuality: 80,
-                                      );
+                                    const SizedBox(height: 16),
 
-                                      if (pickedFile != null && context.mounted) {
-                                        final imageFile = File(pickedFile.path);
-
-                                        // Verify face
-                                        final result = await faceRecognitionProvider.compareFaces(
-                                          studentId: studentId,
-                                          imageFile: imageFile,
-                                        );
-
-                                        if (result != null && result['verification_match'] == true) {
-                                          setState(() {
-                                            isFaceVerified = true;
-                                            faceVerificationResult = result;
-                                          });
-                                        } else if (context.mounted) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            SnackBar(
-                                              content: Text(
-                                                'Face verification failed. Please try again.',
-                                                style: GoogleFonts.poppins(),
-                                              ),
-                                              backgroundColor: Colors.red,
-                                              behavior: SnackBarBehavior.floating,
-                                            ),
-                                          );
-                                        }
-                                      }
-                                    } catch (e) {
-                                      if (context.mounted) {
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          SnackBar(
-                                            content: Text(
-                                              'Error: $e',
-                                              style: GoogleFonts.poppins(),
-                                            ),
-                                            backgroundColor: Colors.red,
-                                            behavior: SnackBarBehavior.floating,
-                                          ),
-                                        );
-                                      }
-                                    }
-                                  } : null,
-                                  icon: const Icon(Icons.camera_alt),
-                                  label: Text(
-                                    bleDetected ? 'Take Photo to Verify' : 'Connect to Signal First',
-                                    style: GoogleFonts.poppins(),
-                                  ),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: bleDetected ? Theme.of(context).primaryColor : Colors.grey.shade300,
-                                    foregroundColor: bleDetected ? Colors.white : Colors.grey.shade700,
-                                    minimumSize: Size(double.infinity, 48),
-                                    disabledBackgroundColor: Colors.grey.shade200,
-                                    disabledForegroundColor: Colors.grey.shade500,
-                                  ),
-                                );
-                              },
-                            ),
-
-                          if (isFaceVerified)
-                            Column(
-                              children: [
-                                Container(
-                                  padding: EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Colors.green.shade50,
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(color: Colors.green.shade200),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      Icon(Icons.check_circle, color: Colors.green.shade700),
-                                      SizedBox(width: 12),
-                                      Expanded(
-                                        child: Text(
-                                          'Your face has been successfully verified!',
-                                          style: GoogleFonts.poppins(
-                                            fontSize: 14,
-                                            color: Colors.green.shade700,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                
-                                const SizedBox(height: 16),
-                                
-                                ElevatedButton.icon(
-                                  onPressed: () async {
-                                    final success = await attendanceProvider.markAttendanceWithFaceRecognition(
-                                      sessionId: sessionId,
-                                      studentId: studentId,
-                                      studentName: studentName,
-                                      imageFile: File(''), // Empty file as we already have verification result
-                                      verificationResult: faceVerificationResult,
-                                      bleVerified: true, // Mark as BLE verified
-                                    );
-
-                                    if (context.mounted) {
-                                      // Stop scanning and clean up timer
-                                      statusCheckTimer?.cancel();
-                                      bleProvider.stopScanning();
-                                      Navigator.of(dialogContext).pop();
-
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        SnackBar(
-                                          content: Text(
-                                            success
-                                                ? 'Attendance marked successfully'
-                                                : 'Failed to mark attendance: ${attendanceProvider.error}',
-                                            style: GoogleFonts.poppins(),
-                                          ),
-                                          backgroundColor: success ? Colors.green : Colors.red,
-                                          behavior: SnackBarBehavior.floating,
-                                        ),
-                                      );
-                                    }
-                                  },
-                                  icon: const Icon(Icons.check_circle_outline),
-                                  label: const Text('Submit Attendance'),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.green,
-                                    foregroundColor: Colors.white,
-                                    minimumSize: Size(double.infinity, 48),
-                                  ),
-                                ),
-                              ],
-                            ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    // Stop scanning, clean up timer and close dialog
-                    statusCheckTimer?.cancel();
-                    bleProvider.stopScanning();
-                    Navigator.pop(dialogContext);
-                  },
-                  child: Text(
-                    'Cancel',
-                    style: GoogleFonts.poppins(),
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  void _showFaceRecognitionDialog(BuildContext context, String sessionId, String studentId, String studentName) {
-    final attendanceProvider = Provider.of<AttendanceProvider>(context, listen: false);
-    final faceRecognitionProvider = Provider.of<FaceRecognitionProvider>(context, listen: false);
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) {
-          return AlertDialog(
-            title: Text(
-              'Face Recognition Attendance',
-              style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
-            ),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  FutureBuilder<bool>(
-                    future: faceRecognitionProvider.checkStudentImageExists(studentId),
-                    builder: (context, snapshot) {
-                      if (snapshot.connectionState == ConnectionState.waiting) {
-                        return const Center(child: CircularProgressIndicator());
-                      }
-
-                      final hasImage = snapshot.data ?? false;
-
-                      if (!hasImage) {
-                        return Column(
-                          children: [
-                            Icon(
-                              Icons.error_outline,
-                              size: 48,
-                              color: Colors.orange[700],
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              'No profile image found',
-                              style: GoogleFonts.poppins(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Please upload your profile image to use face recognition for attendance',
-                              style: GoogleFonts.poppins(),
-                              textAlign: TextAlign.center,
-                            ),
-                            const SizedBox(height: 16),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                              children: [
-                                ElevatedButton.icon(
-                                  onPressed: () async {
-                                    final result = await faceRecognitionProvider.uploadStudentImage(ImageSource.camera);
-                                    if (result != null && context.mounted) {
-                                      setState(() {});
-                                    }
-                                  },
-                                  icon: const Icon(Icons.camera_alt),
-                                  label: const Text('Camera')
-                                ),
-                                ElevatedButton.icon(
-                                  onPressed: () async {
-                                    final result = await faceRecognitionProvider.uploadStudentImage(ImageSource.gallery);
-                                    if (result != null && context.mounted) {
-                                      setState(() {});
-                                    }
-                                  },
-                                  icon: const Icon(Icons.photo_library),
-                                  label: const Text('Gallery')
-                                ),
-                              ],
-                            ),
-                          ],
-                        );
-                      }
-
-                      return Column(
-                        children: [
-                          Text(
-                            'Take a selfie to verify your identity and mark attendance',
-                            style: GoogleFonts.poppins(),
-                            textAlign: TextAlign.center,
-                          ),
-                          const SizedBox(height: 16),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                            children: [
-                              ElevatedButton.icon(
-                                onPressed: () async {
-                                  try {
-                                    // First get the image from camera
-                                    final picker = ImagePicker();
-                                    final pickedFile = await picker.pickImage(
-                                      source: ImageSource.camera,
-                                      imageQuality: 80,
-                                    );
-
-                                    if (pickedFile != null && context.mounted) {
-                                      final imageFile = File(pickedFile.path);
-
-                                      // Get comparison result from face recognition provider
-                                      final comparisonResult = await faceRecognitionProvider.compareFaces(
-                                        studentId: studentId,
-                                        imageFile: imageFile,
-                                      );
-
-                                      if (comparisonResult != null && comparisonResult['verification_match'] == true) {
-                                        // If faces match, mark attendance - pass the verification result to avoid double API calls
-                                        final success = await attendanceProvider.markAttendanceWithFaceRecognition(
-                                          sessionId: sessionId,
-                                          studentId: studentId,
-                                          studentName: studentName,
-                                          imageFile: imageFile,
-                                          verificationResult: comparisonResult, // Pass result to avoid double API call
-                                        );
+                                    ElevatedButton.icon(
+                                      onPressed: () async {
+                                        final success = await attendanceProvider
+                                            .markAttendanceWithFaceRecognition(
+                                              sessionId: sessionId,
+                                              studentId: studentId,
+                                              studentName: studentName,
+                                              imageFile: File(
+                                                '',
+                                              ), // Empty file as we already have verification result
+                                              verificationResult:
+                                                  faceVerificationResult,
+                                              wifiVerified:
+                                                  true, // Mark as WiFi verified
+                                            );
 
                                         if (context.mounted) {
-                                          Navigator.of(context).pop();
+                                          // Stop scanning and clean up timer
+                                          statusCheckTimer?.cancel();
+                                          final wifiProvider = Provider.of<wifi_provider.WifiProvider>(context, listen: false);
+                                          wifiProvider.stopScanning();
+                                          Navigator.of(dialogContext).pop();
 
-                                          // Force UI refresh after successful attendance marking
-                                          if (success) {
-                                            setState(() {
-                                              // Refresh the parent widget
-                                            });
-                                          }
-
-                                          ScaffoldMessenger.of(context).showSnackBar(
+                                          ScaffoldMessenger.of(
+                                            context,
+                                          ).showSnackBar(
                                             SnackBar(
                                               content: Text(
                                                 success
@@ -1124,66 +1328,297 @@ class _StudentAttendancePageState extends State<StudentAttendancePage> with Sing
                                                     : 'Failed to mark attendance: ${attendanceProvider.error}',
                                                 style: GoogleFonts.poppins(),
                                               ),
-                                              backgroundColor: success ? Colors.green : Colors.red,
-                                              behavior: SnackBarBehavior.floating,
+                                              backgroundColor:
+                                                  success
+                                                      ? Colors.green
+                                                      : Colors.red,
+                                              behavior:
+                                                  SnackBarBehavior.floating,
                                             ),
                                           );
                                         }
-                                      } else {
-                                        // If faces don't match
+                                      },
+                                      icon: const Icon(
+                                        Icons.check_circle_outline,
+                                      ),
+                                      label: const Text('Submit Attendance'),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.green,
+                                        foregroundColor: Colors.white,
+                                        minimumSize: Size(double.infinity, 48),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () {
+                        // Stop scanning, clean up timer and close dialog
+                        statusCheckTimer?.cancel();
+                        wifiProvider.stopScanning();
+                        Navigator.pop(dialogContext);
+                      },
+                      child: Text('Cancel', style: GoogleFonts.poppins()),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+    );
+  }
+
+  void _showFaceRecognitionDialog(
+    BuildContext context,
+    String sessionId,
+    String studentId,
+    String studentName,
+  ) {
+    final attendanceProvider = Provider.of<AttendanceProvider>(
+      context,
+      listen: false,
+    );
+    final faceRecognitionProvider = Provider.of<FaceRecognitionProvider>(
+      context,
+      listen: false,
+    );
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder:
+          (context) => StatefulBuilder(
+            builder: (context, setState) {
+              return AlertDialog(
+                title: Text(
+                  'Face Recognition Attendance',
+                  style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+                ),
+                content: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FutureBuilder<bool>(
+                        future: faceRecognitionProvider.checkStudentImageExists(
+                          studentId,
+                        ),
+                        builder: (context, snapshot) {
+                          if (snapshot.connectionState ==
+                              ConnectionState.waiting) {
+                            return const Center(
+                              child: CircularProgressIndicator(),
+                            );
+                          }
+
+                          final hasImage = snapshot.data ?? false;
+
+                          if (!hasImage) {
+                            return Column(
+                              children: [
+                                Icon(
+                                  Icons.error_outline,
+                                  size: 48,
+                                  color: Colors.orange[700],
+                                ),
+                                const SizedBox(height: 16),
+                                Text(
+                                  'No profile image found',
+                                  style: GoogleFonts.poppins(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'Please upload your profile image to use face recognition for attendance',
+                                  style: GoogleFonts.poppins(),
+                                  textAlign: TextAlign.center,
+                                ),
+                                const SizedBox(height: 16),
+                                Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceEvenly,
+                                  children: [
+                                    ElevatedButton.icon(
+                                      onPressed: () async {
+                                        final result =
+                                            await faceRecognitionProvider
+                                                .uploadStudentImage(
+                                                  ImageSource.camera,
+                                                );
+                                        if (result != null && context.mounted) {
+                                          setState(() {});
+                                        }
+                                      },
+                                      icon: const Icon(Icons.camera_alt),
+                                      label: const Text('Camera'),
+                                    ),
+                                    ElevatedButton.icon(
+                                      onPressed: () async {
+                                        final result =
+                                            await faceRecognitionProvider
+                                                .uploadStudentImage(
+                                                  ImageSource.gallery,
+                                                );
+                                        if (result != null && context.mounted) {
+                                          setState(() {});
+                                        }
+                                      },
+                                      icon: const Icon(Icons.photo_library),
+                                      label: const Text('Gallery'),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            );
+                          }
+
+                          return Column(
+                            children: [
+                              Text(
+                                'Take a selfie to verify your identity and mark attendance',
+                                style: GoogleFonts.poppins(),
+                                textAlign: TextAlign.center,
+                              ),
+                              const SizedBox(height: 16),
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceEvenly,
+                                children: [
+                                  ElevatedButton.icon(
+                                    onPressed: () async {
+                                      try {
+                                        // First get the image from camera
+                                        final picker = ImagePicker();
+                                        final pickedFile = await picker
+                                            .pickImage(
+                                              source: ImageSource.camera,
+                                              imageQuality: 80,
+                                            );
+
+                                        if (pickedFile != null &&
+                                            context.mounted) {
+                                          final imageFile = File(
+                                            pickedFile.path,
+                                          );
+
+                                          // Get comparison result from face recognition provider
+                                          final comparisonResult =
+                                              await faceRecognitionProvider
+                                                  .compareFaces(
+                                                    studentId: studentId,
+                                                    imageFile: imageFile,
+                                                  );
+
+                                          if (comparisonResult != null &&
+                                              comparisonResult['verification_match'] ==
+                                                  true) {
+                                            // If faces match, mark attendance - pass the verification result to avoid double API calls
+                                            final success = await attendanceProvider
+                                                .markAttendanceWithFaceRecognition(
+                                                  sessionId: sessionId,
+                                                  studentId: studentId,
+                                                  studentName: studentName,
+                                                  imageFile: imageFile,
+                                                  verificationResult:
+                                                      comparisonResult, // Pass result to avoid double API call
+                                                );
+
+                                            if (context.mounted) {
+                                              Navigator.of(context).pop();
+
+                                              // Force UI refresh after successful attendance marking
+                                              if (success) {
+                                                setState(() {
+                                                  // Refresh the parent widget
+                                                });
+                                              }
+
+                                              ScaffoldMessenger.of(
+                                                context,
+                                              ).showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                    success
+                                                        ? 'Attendance marked successfully'
+                                                        : 'Failed to mark attendance: ${attendanceProvider.error}',
+                                                    style:
+                                                        GoogleFonts.poppins(),
+                                                  ),
+                                                  backgroundColor:
+                                                      success
+                                                          ? Colors.green
+                                                          : Colors.red,
+                                                  behavior:
+                                                      SnackBarBehavior.floating,
+                                                ),
+                                              );
+                                            }
+                                          } else {
+                                            // If faces don't match
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(
+                                                context,
+                                              ).showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                    'Face verification failed. Please try again.',
+                                                    style:
+                                                        GoogleFonts.poppins(),
+                                                  ),
+                                                  backgroundColor: Colors.red,
+                                                  behavior:
+                                                      SnackBarBehavior.floating,
+                                                ),
+                                              );
+                                            }
+                                          }
+                                        }
+                                      } catch (e) {
                                         if (context.mounted) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
+                                          ScaffoldMessenger.of(
+                                            context,
+                                          ).showSnackBar(
                                             SnackBar(
                                               content: Text(
-                                                'Face verification failed. Please try again.',
+                                                'Error: $e',
                                                 style: GoogleFonts.poppins(),
                                               ),
                                               backgroundColor: Colors.red,
-                                              behavior: SnackBarBehavior.floating,
+                                              behavior:
+                                                  SnackBarBehavior.floating,
                                             ),
                                           );
                                         }
                                       }
-                                    }
-                                  } catch (e) {
-                                    if (context.mounted) {
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        SnackBar(
-                                          content: Text(
-                                            'Error: $e',
-                                            style: GoogleFonts.poppins(),
-                                          ),
-                                          backgroundColor: Colors.red,
-                                          behavior: SnackBarBehavior.floating,
-                                        ),
-                                      );
-                                    }
-                                  }
-                                },
-                                icon: const Icon(Icons.camera_alt),
-                                label: const Text('Take Photo'),
+                                    },
+                                    icon: const Icon(Icons.camera_alt),
+                                    label: const Text('Take Photo'),
+                                  ),
+                                ],
                               ),
                             ],
-                          ),
-                        ],
-                      );
-                    },
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: Text('Cancel', style: GoogleFonts.poppins()),
                   ),
                 ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: Text(
-                  'Cancel',
-                  style: GoogleFonts.poppins(),
-                ),
-              ),
-            ],
-          );
-        },
-      ),
+              );
+            },
+          ),
     );
   }
 
@@ -1311,9 +1746,7 @@ class _StudentAttendancePageState extends State<StudentAttendancePage> with Sing
               icon: const Icon(Icons.refresh_rounded),
               label: Text(
                 'Retry',
-                style: GoogleFonts.poppins(
-                  fontWeight: FontWeight.w500,
-                ),
+                style: GoogleFonts.poppins(fontWeight: FontWeight.w500),
               ),
             ),
           ],
@@ -1323,73 +1756,93 @@ class _StudentAttendancePageState extends State<StudentAttendancePage> with Sing
   }
 
   // Filter student courses
-  List<QueryDocumentSnapshot> _filterStudentCourses(List<QueryDocumentSnapshot> docs, String studentId) {
+  List<QueryDocumentSnapshot> _filterStudentCourses(
+    List<QueryDocumentSnapshot> docs,
+    String studentId,
+  ) {
     return docs.where((doc) {
       final courseData = doc.data() as Map<String, dynamic>;
       final students = List<Map<String, dynamic>>.from(
-        (courseData['students'] ?? []).map((student) => 
-          student is Map<String, dynamic> ? student : {}
-        )
+        (courseData['students'] ?? []).map(
+          (student) => student is Map<String, dynamic> ? student : {},
+        ),
       );
       return students.any((student) => student['studentId'] == studentId);
     }).toList();
   }
 
   // Get active attendance sessions
-  Future<List<AttendanceSession>> _getActiveAttendanceSessions(List<String> courseIds) async {
+  Future<List<AttendanceSession>> _getActiveAttendanceSessions(
+    List<String> courseIds,
+  ) async {
     if (courseIds.isEmpty) {
       return [];
     }
 
     final firestore = FirebaseFirestore.instance;
     final now = DateTime.now();
-    
+    final studentId = Provider.of<AuthProvider>(context, listen: false).user?.uid ?? '';
+
     // Get all active attendance sessions for the student's courses
-    final querySnapshot = await firestore
-        .collection('attendance_sessions')
-        .where('courseId', whereIn: courseIds)
-        .where('isActive', isEqualTo: true)
-        .get();
-    
-    final sessions = querySnapshot.docs
-        .map((doc) => AttendanceSession.fromFirestore(doc))
-        .where((session) => session.endTime.isAfter(now)) // Only include sessions that haven't ended
-        .toList();
-    
+    final querySnapshot =
+        await firestore
+            .collection('attendance_sessions')
+            .where('courseId', whereIn: courseIds)
+            .where('isActive', isEqualTo: true)
+            .get();
+
+    final sessions =
+        querySnapshot.docs
+            .map((doc) => AttendanceSession.fromFirestore(doc))
+            .where(
+              (session) =>
+                  session.endTime.isAfter(now) &&
+                  // Exclude sessions where the student has already marked attendance
+                  !session.attendees.any((attendee) => attendee['studentId'] == studentId),
+            )
+            .toList();
+
     // Sort by start time (most recent first)
     sessions.sort((a, b) => b.startTime.compareTo(a.startTime));
-    
+
     return sessions;
   }
 
   // Get attendance history
-  Future<List<AttendanceSession>> _getAttendanceHistory(List<String> courseIds, String studentId) async {
+  Future<List<AttendanceSession>> _getAttendanceHistory(
+    List<String> courseIds,
+    String studentId,
+  ) async {
     if (courseIds.isEmpty) {
       return [];
     }
 
     final firestore = FirebaseFirestore.instance;
-    
+
     // Get all attendance sessions for the student's courses
-    final querySnapshot = await firestore
-        .collection('attendance_sessions')
-        .where('courseId', whereIn: courseIds)
-        .get();
-    
-    // Filter sessions where the student has marked attendance or the session is closed
-    final sessions = querySnapshot.docs
-        .map((doc) => AttendanceSession.fromFirestore(doc))
-        .where((session) {
-          final hasMarkedAttendance = session.attendees.any(
-            (attendee) => attendee['studentId'] == studentId
-          );
-          return hasMarkedAttendance || !session.isActive;
-        })
-        .toList();
-    
+    final querySnapshot =
+        await firestore
+            .collection('attendance_sessions')
+            .where('courseId', whereIn: courseIds)
+            .get();
+
+    // Filter sessions where the student has marked attendance (including active sessions)
+    // or the session is closed
+    final sessions =
+        querySnapshot.docs
+            .map((doc) => AttendanceSession.fromFirestore(doc))
+            .where((session) {
+              final hasMarkedAttendance = session.attendees.any(
+                (attendee) => attendee['studentId'] == studentId,
+              );
+              // Include both closed sessions AND active sessions where attendance is marked
+              return hasMarkedAttendance || !session.isActive;
+            })
+            .toList();
+
     // Sort by start time (most recent first)
     sessions.sort((a, b) => b.startTime.compareTo(a.startTime));
-    
+
     return sessions;
   }
 }
@@ -1399,33 +1852,153 @@ class _SessionCard extends StatelessWidget {
   final String courseName;
   final String courseCode;
   final bool isActiveTab;
-  final bool bleSignalDetected; // Add BLE signal detection state
+  final bool wifiSignalDetected; // Add WiFi signal detection state
 
   const _SessionCard({
     required this.session,
     required this.courseName,
     required this.courseCode,
     required this.isActiveTab,
-    required this.bleSignalDetected, // Add BLE signal detection state
+    required this.wifiSignalDetected, // Add WiFi signal detection state
   });
 
   @override
   Widget build(BuildContext context) {
-    // Check if BLE is available in the session
-    final bleEnabled = session.signalTime != null;
-
+    // Check if WiFi is available in the session
+    final wifiEnabled = session.signalTime != null;
+    
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        side: BorderSide(
-          color: Colors.grey[200]!,
-          width: 1,
-        ),
+        side: BorderSide(color: Colors.grey[200]!, width: 1),
       ),
       child: InkWell(
-        onTap: isActiveTab ? () => _handleAttendanceMarking(context) : null,
+        // Only allow tapping if the session is active and we're on the active tab
+        onTap: isActiveTab ? () async {
+          // Check if WiFi is enabled for this session
+          if (!wifiEnabled) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'WiFi attendance is not enabled for this session',
+                  style: GoogleFonts.poppins(),
+                ),
+                backgroundColor: Colors.orange,
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+            return;
+          }
+          
+          // Show loading indicator
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) => const Center(
+              child: CircularProgressIndicator(),
+            ),
+          );
+          
+          try {
+            // Get the student's current WiFi information
+            final wifiProvider = Provider.of<wifi_provider.WifiProvider>(context, listen: false);
+            final studentWifiName = await wifiProvider.getCurrentWifiName();
+            
+            if (studentWifiName == null) {
+              // Close loading indicator
+              Navigator.of(context).pop();
+              
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'Cannot mark attendance: WiFi is not enabled on your device',
+                    style: GoogleFonts.poppins(),
+                  ),
+                  backgroundColor: Colors.red,
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+              return;
+            }
+            
+            // Check if the teacher's WiFi signal is active in Firestore
+            final signalDoc = await FirebaseFirestore.instance
+                .collection('attendance_signals')
+                .doc(session.id)
+                .get();
+            
+            // Close loading indicator
+            Navigator.of(context).pop();
+            
+            if (!signalDoc.exists || signalDoc.data() == null) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'Cannot mark attendance: The instructor has not activated the WiFi signal yet',
+                    style: GoogleFonts.poppins(),
+                  ),
+                  backgroundColor: Colors.orange,
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+              return;
+            }
+            
+            final signalData = signalDoc.data()!;
+            final teacherWifiName = signalData['wifiName'];
+            final wifiSignalActive = signalData['wifiSignalActive'] == true;
+            
+            print('🔍 Student WiFi: $studentWifiName, Teacher WiFi: $teacherWifiName, Signal Active: $wifiSignalActive');
+            
+            if (!wifiSignalActive) {
+              // Show error: WiFi signal not active
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'Cannot mark attendance: The instructor has not activated the WiFi signal yet',
+                    style: GoogleFonts.poppins(),
+                  ),
+                  backgroundColor: Colors.orange,
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            } else if (studentWifiName != teacherWifiName) {
+              // Show error: Not on the same WiFi network
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'Cannot mark attendance: You are not connected to the same WiFi network as your instructor (${teacherWifiName})',
+                    style: GoogleFonts.poppins(),
+                  ),
+                  backgroundColor: Colors.red,
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            } else {
+              // All conditions met, proceed with attendance marking
+              _handleAttendanceMarking(context);
+            }
+          } catch (e) {
+            // Close loading indicator if still showing
+            if (Navigator.canPop(context)) {
+              Navigator.of(context).pop();
+            }
+            
+            print('❌ Error checking WiFi networks: $e');
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Error checking WiFi networks: $e',
+                  style: GoogleFonts.poppins(),
+                ),
+                backgroundColor: Colors.red,
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          }
+        } : null,
         borderRadius: BorderRadius.circular(16),
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -1451,7 +2024,10 @@ class _SessionCard extends StatelessWidget {
                   ),
                   child: Row(
                     children: [
-                      Icon(Icons.bluetooth_searching, color: Colors.blue.shade700),
+                      Icon(
+                        Icons.bluetooth_searching,
+                        color: Colors.blue.shade700,
+                      ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -1483,13 +2059,20 @@ class _SessionCard extends StatelessWidget {
   }
 
   void _handleAttendanceMarking(BuildContext context) {
-    final studentId = Provider.of<AuthProvider>(context, listen: false).user?.uid ?? '';
-    final studentName = Provider.of<AuthProvider>(context, listen: false).user?.displayName ?? '';
-    final bleProvider = Provider.of<BleProvider>(context, listen: false);
-    final isBleEnabled = session.signalTime != null;
-    
+    final studentId =
+        Provider.of<AuthProvider>(context, listen: false).user?.uid ?? '';
+    final studentName =
+        Provider.of<AuthProvider>(context, listen: false).user?.displayName ??
+        '';
+    final wifiProvider = Provider.of<wifi_provider.WifiProvider>(
+      context,
+      listen: false,
+    );
+    final isWifiEnabled = session.signalTime != null;
+
     // Get a reference to the parent state to access dialog methods
-    final parentState = context.findAncestorStateOfType<_StudentAttendancePageState>();
+    final parentState =
+        context.findAncestorStateOfType<_StudentAttendancePageState>();
     if (parentState == null) {
       // Fallback if parent state is not found
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1505,22 +2088,22 @@ class _SessionCard extends StatelessWidget {
       return;
     }
 
-    if (isBleEnabled) {
-      // First check if there's an active BLE signal for this session in Firestore
+    if (isWifiEnabled) {
+      // First check if there's an active WiFi signal for this session in Firestore
       FirebaseFirestore.instance
           .collection('attendance_sessions')
           .doc(session.id)
           .get()
           .then((doc) {
             final data = doc.data();
-            final bleSignalActive = data?['bleSignalActive'] ?? false;
-            
-            if (!bleSignalActive) {
-              // Show error: BLE signal not active
+            final wifiSignalActive = data?['wifiSignalActive'] ?? false;
+
+            if (!wifiSignalActive) {
+              // Show error: WiFi signal not active
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   content: Text(
-                    'Cannot mark attendance: The instructor has not activated the BLE signal yet.',
+                    'Cannot mark attendance: The instructor has not activated the WiFi signal yet.',
                     style: GoogleFonts.poppins(),
                   ),
                   backgroundColor: Colors.orange,
@@ -1528,13 +2111,24 @@ class _SessionCard extends StatelessWidget {
                 ),
               );
             } else {
-              // Show BLE attendance dialog with face recognition
-              parentState._showBleAttendanceDialog(context, session.id, studentId, studentName, session.courseId);
+              // Show WiFi attendance dialog with face recognition
+              parentState._showWifiAttendanceDialog(
+                context,
+                session.id,
+                studentId,
+                studentName,
+                session.courseId,
+              );
             }
           });
     } else {
-      // Use the existing face recognition dialog without BLE
-      parentState._showFaceRecognitionDialog(context, session.id, studentId, studentName);
+      // Use the existing face recognition dialog without WiFi
+      parentState._showFaceRecognitionDialog(
+        context,
+        session.id,
+        studentId,
+        studentName,
+      );
     }
   }
 
@@ -1546,10 +2140,7 @@ class _SessionCard extends StatelessWidget {
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(
-        horizontal: 16,
-        vertical: 12,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
         color: wasPresent ? Colors.green[50] : Colors.red[50],
         borderRadius: BorderRadius.circular(12),
@@ -1577,18 +2168,21 @@ class _SessionCard extends StatelessWidget {
           if (wasPresent) ...[
             const SizedBox(width: 16),
             Icon(
-              _getVerificationIcon(session.attendees.firstWhere(
-                (attendee) => attendee['studentId'] == studentId,
-              )['verificationMethod'] ?? 'Manual'),
+              _getVerificationIcon(
+                session.attendees.firstWhere(
+                      (attendee) => attendee['studentId'] == studentId,
+                    )['verificationMethod'] ??
+                    'Manual',
+              ),
               size: 16,
               color: Colors.green[700],
             ),
             const SizedBox(width: 4),
             Text(
-              session.attendees
-                  .firstWhere(
+              session.attendees.firstWhere(
                     (attendee) => attendee['studentId'] == studentId,
-                  )['verificationMethod'] ?? 'Manual',
+                  )['verificationMethod'] ??
+                  'Manual',
               style: GoogleFonts.poppins(
                 fontSize: 12,
                 color: Colors.green[700],
@@ -1613,14 +2207,9 @@ class _SessionCard extends StatelessWidget {
     return Row(
       children: [
         Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 6,
-          ),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           decoration: BoxDecoration(
-            color: session.isActive
-                ? Colors.green[50]
-                : Colors.grey[100],
+            color: session.isActive ? Colors.green[50] : Colors.grey[100],
             borderRadius: BorderRadius.circular(20),
           ),
           child: Row(
@@ -1631,9 +2220,7 @@ class _SessionCard extends StatelessWidget {
                     ? Icons.radio_button_on
                     : Icons.radio_button_off,
                 size: 14,
-                color: session.isActive
-                    ? Colors.green[700]
-                    : Colors.grey[600],
+                color: session.isActive ? Colors.green[700] : Colors.grey[600],
               ),
               const SizedBox(width: 6),
               Text(
@@ -1641,9 +2228,8 @@ class _SessionCard extends StatelessWidget {
                 style: GoogleFonts.poppins(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
-                  color: session.isActive
-                      ? Colors.green[700]
-                      : Colors.grey[600],
+                  color:
+                      session.isActive ? Colors.green[700] : Colors.grey[600],
                 ),
               ),
             ],
@@ -1651,10 +2237,7 @@ class _SessionCard extends StatelessWidget {
         ),
         const SizedBox(width: 12),
         Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 6,
-          ),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           decoration: BoxDecoration(
             color: Theme.of(context).primaryColor.withOpacity(0.1),
             borderRadius: BorderRadius.circular(20),
@@ -1687,10 +2270,7 @@ class _SessionCard extends StatelessWidget {
         const SizedBox(height: 4),
         Text(
           session.title,
-          style: GoogleFonts.poppins(
-            fontSize: 14,
-            color: Colors.grey[600],
-          ),
+          style: GoogleFonts.poppins(fontSize: 14, color: Colors.grey[600]),
         ),
       ],
     );
@@ -1702,9 +2282,7 @@ class _SessionCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.grey[50],
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: Colors.grey[100]!,
-        ),
+        border: Border.all(color: Colors.grey[100]!),
       ),
       child: IntrinsicHeight(
         child: Row(
@@ -1716,16 +2294,13 @@ class _SessionCard extends StatelessWidget {
                 value: DateFormat('MMM d, yyyy').format(session.startTime),
               ),
             ),
-            VerticalDivider(
-              width: 32,
-              thickness: 1,
-              color: Colors.grey[200],
-            ),
+            VerticalDivider(width: 32, thickness: 1, color: Colors.grey[200]),
             Expanded(
               child: _TimeInfoItem(
                 icon: Icons.access_time_outlined,
                 label: 'Time',
-                value: '${DateFormat('h:mm a').format(session.startTime)} - ${DateFormat('h:mm a').format(session.endTime)}',
+                value:
+                    '${DateFormat('h:mm a').format(session.startTime)} - ${DateFormat('h:mm a').format(session.endTime)}',
               ),
             ),
           ],
@@ -1743,10 +2318,7 @@ class _SessionCard extends StatelessWidget {
     if (!session.isActive) {
       return Container(
         width: double.infinity,
-        padding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
           color: Colors.grey[100],
           borderRadius: BorderRadius.circular(12),
@@ -1766,16 +2338,11 @@ class _SessionCard extends StatelessWidget {
     if (hasMarkedAttendance) {
       return Container(
         width: double.infinity,
-        padding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
           color: Colors.green[50],
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: Colors.green[100]!,
-          ),
+          border: Border.all(color: Colors.green[100]!),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -1799,39 +2366,56 @@ class _SessionCard extends StatelessWidget {
       );
     }
 
-    // Update button to show BLE scanning if BLE signal is active
-    final isBleEnabled = session.signalTime != null;
-
-    return ElevatedButton(
-      onPressed: bleSignalDetected ? () => _handleAttendanceMarking(context) : null,
-      style: ElevatedButton.styleFrom(
-        backgroundColor: bleSignalDetected ? Theme.of(context).primaryColor : Colors.grey.shade300,
-        foregroundColor: bleSignalDetected ? Colors.white : Colors.grey.shade700,
-        elevation: 0,
-        padding: const EdgeInsets.symmetric(
-          horizontal: 24,
-          vertical: 12,
-        ),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-        ),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            isBleEnabled ? Icons.bluetooth_searching : Icons.face_outlined,
-            size: 20,
+    // Use FutureBuilder to check if the WiFi signal is active in Firestore
+    return FutureBuilder<DocumentSnapshot>(
+      future: FirebaseFirestore.instance
+          .collection('attendance_signals')
+          .doc(session.id)
+          .get(),
+      builder: (context, snapshot) {
+        // Default to false unless we can confirm the signal is active
+        bool signalActive = false;
+        
+        // Check if we have valid data and the signal is active
+        if (snapshot.hasData && snapshot.data != null && snapshot.data!.exists) {
+          final data = snapshot.data!.data() as Map<String, dynamic>?;
+          signalActive = data != null && data['wifiSignalActive'] == true;
+        }
+        
+        // Check all conditions for enabling the button
+        final bool canMarkAttendance = wifiSignalDetected && 
+                                      session.signalTime != null && 
+                                      signalActive;
+        
+        // Debug print to check values
+        print('📱 Button state: wifiSignalDetected=$wifiSignalDetected, signalTime=${session.signalTime}, signalActive=$signalActive, canMarkAttendance=$canMarkAttendance');
+        
+        return ElevatedButton(
+          onPressed: canMarkAttendance ? () => _handleAttendanceMarking(context) : null,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: canMarkAttendance
+                ? Theme.of(context).primaryColor
+                : Colors.grey.shade300,
+            foregroundColor: canMarkAttendance ? Colors.white : Colors.grey.shade700,
+            elevation: 0,
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
-          const SizedBox(width: 8),
-          Text(
-            isBleEnabled ? 'Mark Attendance (BLE Enabled)' : 'Mark Attendance',
-            style: GoogleFonts.poppins(
-              fontWeight: FontWeight.w500,
-            ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(session.signalTime != null ? Icons.wifi_find : Icons.face_outlined, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                session.signalTime != null 
+                  ? (canMarkAttendance ? 'Mark Attendance (WiFi Enabled)' : 'Waiting for Teacher Signal...') 
+                  : 'Mark Attendance',
+                style: GoogleFonts.poppins(fontWeight: FontWeight.w500),
+              ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 }
@@ -1854,11 +2438,7 @@ class _TimeInfoItem extends StatelessWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
-              icon,
-              size: 16,
-              color: Colors.grey[600],
-            ),
+            Icon(icon, size: 16, color: Colors.grey[600]),
             const SizedBox(width: 6),
             Text(
               label,

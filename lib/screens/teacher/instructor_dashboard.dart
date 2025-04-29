@@ -220,7 +220,7 @@ class _InstructorDashboardState extends State<InstructorDashboard> {
                                   ),
                                 ),
                                 Text(
-                                  'Add a new course to your dashboard',
+                                  'Add a new course',
                                   style: GoogleFonts.poppins(
                                     fontSize: 13,
                                     color: Colors.grey[600],

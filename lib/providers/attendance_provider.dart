@@ -76,7 +76,7 @@ class AttendanceProvider extends ChangeNotifier {
     }
   }
   
-  // Send attendance signal (updated for BLE)
+  // Send attendance signal (updated for WiFi)
   Future<bool> sendAttendanceSignal(String sessionId) async {
     try {
       _isLoading = true;
@@ -95,7 +95,7 @@ class AttendanceProvider extends ChangeNotifier {
     }
   }
   
-  // Stop attendance signal (new method for BLE)
+  // Stop attendance signal (new method for WiFi)
   Future<bool> stopAttendanceSignal(String sessionId) async {
     try {
       _isLoading = true;
@@ -114,7 +114,7 @@ class AttendanceProvider extends ChangeNotifier {
     }
   }
   
-  // Check if a session has an active BLE signal
+  // Check if a session has an active WiFi signal
   Future<bool> isSessionSignalActive(String sessionId) async {
     try {
       return await _attendanceService.isSessionSignalActive(sessionId);
@@ -145,20 +145,20 @@ class AttendanceProvider extends ChangeNotifier {
     required String sessionId,
     required String studentId,
     required String studentName,
-    bool bleVerified = false, // New parameter for BLE verification
+    bool wifiVerified = false, // New parameter for WiFi verification
   }) async {
     try {
       _isLoading = true;
       _error = null;
       notifyListeners();
       
-      // Add BLE verification parameter 
+      // Add WiFi verification parameter 
       await _attendanceService.markAttendance(
         sessionId: sessionId,
         studentId: studentId,
         studentName: studentName,
         verificationMethod: 'Manual',
-        bleVerified: bleVerified,
+        wifiVerified: wifiVerified,
       );
       
       return true;
@@ -178,7 +178,7 @@ class AttendanceProvider extends ChangeNotifier {
     required String studentName,
     required File imageFile,
     Map<String, dynamic>? verificationResult, // Add optional parameter to pass existing verification result
-    bool bleVerified = false, // Add BLE verification status
+    bool wifiVerified = false, // Add WiFi verification status
   }) async {
     try {
       _isLoading = true;
@@ -208,7 +208,7 @@ class AttendanceProvider extends ChangeNotifier {
       }
       
       if (comparisonResult['verification_match'] == true) {
-        // If faces match, mark attendance with BLE verification status
+        // If faces match, mark attendance with WiFi verification status
         await _attendanceService.markAttendance(
           sessionId: sessionId,
           studentId: studentId,
@@ -218,7 +218,7 @@ class AttendanceProvider extends ChangeNotifier {
             'confidence': comparisonResult['confidence'],
             'timestamp': DateTime.now().toIso8601String(),
           },
-          bleVerified: bleVerified, // Pass the BLE verification status
+          wifiVerified: wifiVerified, // Pass the WiFi verification status
         );
         
         return true;

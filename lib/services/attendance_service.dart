@@ -47,8 +47,8 @@ class AttendanceService {
       'signalTime': null, // Initialize signal time as null
       'lateThresholdMinutes': lateThresholdMinutes,
       'absentThresholdMinutes': absentThresholdMinutes,
-      'bleEnabled': true, // New field to indicate BLE-based attendance is enabled
-      'bleSignalActive': false, // Flag to track if BLE signal is currently active
+      'wifiEnabled': true, // New field to indicate WiFi-based attendance is enabled
+      'wifiSignalActive': false, // Flag to track if WiFi signal is currently active
     });
   }
 
@@ -77,12 +77,12 @@ class AttendanceService {
         .doc(sessionId)
         .update({
       'isActive': false,
-      'bleSignalActive': false, // Ensure BLE signal is also deactivated
+      'wifiSignalActive': false, // Ensure WiFi signal is also deactivated
       'updatedAt': FieldValue.serverTimestamp(),
     });
   }
 
-  // Send attendance signal to students (with BLE support)
+  // Send attendance signal to students (with WiFi support)
   Future<void> sendAttendanceSignal(String sessionId) async {
     // Record the signal time
     final now = DateTime.now();
@@ -91,7 +91,7 @@ class AttendanceService {
         .doc(sessionId)
         .update({
       'signalTime': Timestamp.fromDate(now),
-      'bleSignalActive': true, // Mark that BLE signal is now active
+      'wifiSignalActive': true, // Mark that WiFi signal is now active
       'updatedAt': FieldValue.serverTimestamp(),
     });
 
@@ -117,7 +117,7 @@ class AttendanceService {
         'sentAt': Timestamp.fromDate(now),
         'read': false,
         'targetRole': 'student',
-        'isBleBased': true, // Mark this as BLE-based attendance
+        'isWifiBased': true, // Mark this as WiFi-based attendance
       });
 
       // Note: We won't send push notifications directly as we're using BLE now
@@ -125,18 +125,18 @@ class AttendanceService {
     }
   }
 
-  // Stop attendance signal (new method for BLE)
+  // Stop attendance signal (new method for WiFi)
   Future<void> stopAttendanceSignal(String sessionId) async {
     await _firestore
         .collection('attendance_sessions')
         .doc(sessionId)
         .update({
-      'bleSignalActive': false,
+      'wifiSignalActive': false,
       'updatedAt': FieldValue.serverTimestamp(),
     });
   }
 
-  // Check if a BLE signal is active for a session
+  // Check if a WiFi signal is active for a session
   Future<bool> isSessionSignalActive(String sessionId) async {
     final doc = await _firestore
         .collection('attendance_sessions')
@@ -146,17 +146,17 @@ class AttendanceService {
     if (!doc.exists) return false;
 
     final data = doc.data() as Map<String, dynamic>;
-    return data['bleSignalActive'] == true;
+    return data['wifiSignalActive'] == true;
   }
 
-  // Mark attendance for a student (updated to accept BLE verification)
+  // Mark attendance for a student (updated to accept WiFi verification)
   Future<void> markAttendance({
     required String sessionId,
     required String studentId,
     required String studentName,
     String verificationMethod = 'Manual',
     Map<String, dynamic>? verificationData,
-    bool bleVerified = false, // New param to indicate BLE verification
+    bool wifiVerified = false, // New param to indicate WiFi verification
   }) async {
     // Check if the session is active
     final sessionDoc = await _firestore
@@ -173,10 +173,10 @@ class AttendanceService {
       throw Exception('Attendance session is not active');
     }
 
-    // Check if BLE verification is required but not provided
-    final bleEnabled = sessionData['bleEnabled'] ?? false;
-    if (bleEnabled && !bleVerified && verificationMethod != 'Manual') {
-      throw Exception('BLE verification required for attendance');
+    // Check if WiFi verification is required but not provided
+    final wifiEnabled = sessionData['wifiEnabled'] ?? false;
+    if (wifiEnabled && !wifiVerified && verificationMethod != 'Manual') {
+      throw Exception('WiFi verification required for attendance');
     }
 
     // Check if the student is already marked
@@ -221,7 +221,7 @@ class AttendanceService {
           'markedAt': Timestamp.now(),
           'verificationMethod': verificationMethod,
           'verificationData': verificationData,
-          'bleVerified': bleVerified, // Include BLE verification status
+          'wifiVerified': wifiVerified, // Include WiFi verification status
           'status': status, // Add attendance status
           'responseTime': Timestamp.now(),
         }
