@@ -80,9 +80,13 @@ async def compare_faces(
         # Download the image from Firebase Storage URL
         logger.info(f"Attempting to download image from: {student_image_url}")
         response = requests.get(student_image_url)
-
+        
+        # Log more details about the response for debugging
+        logger.info(f"Firebase response status code: {response.status_code}")
         if not response.ok:
-            raise HTTPException(status_code=400, detail="Invalid image")
+            error_msg = f"Failed to download image: HTTP {response.status_code}"
+            logger.error(error_msg)
+            raise HTTPException(status_code=400, detail=error_msg)
         
         # save the image from response using the BytesIO
         student_image = Image.open(BytesIO(response.content))

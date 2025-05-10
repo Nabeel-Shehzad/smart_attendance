@@ -13,6 +13,7 @@ import '../../providers/face_recognition_provider.dart';
 import '../../providers/wifi_provider.dart' as wifi_provider;
 import '../../models/attendance_session.dart';
 import '../../widgets/wifi_status_indicator.dart' as wifi_indicator;
+import '../../utils/image_verification_manager.dart';
 
 class StudentAttendancePage extends StatefulWidget {
   const StudentAttendancePage({Key? key}) : super(key: key);
@@ -33,14 +34,21 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
   Map<String, bool> _wifiSignalDetectedMap =
       {}; // Maps sessionId -> detected status
 
+  // Add these variables to the class to store image and verification result globally
+  static File? _capturedImageFile;
+  static Map<String, dynamic>? _faceVerificationResult;
+
   @override
   void initState() {
     super.initState();
+    // Initialize tab controller
     _tabController = TabController(
       length: 2,
       vsync: this,
       initialIndex: _selectedTabIndex,
     );
+
+    // Add listener for tab changes
     _tabController.addListener(() {
       if (!_tabController.indexIsChanging) {
         setState(() {
@@ -49,26 +57,28 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
       }
     });
 
-    // Start background WiFi scanning when page loads
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _startBackgroundWifiScanning();
-    });
+    // Start periodic scanning for WiFi signals
+    _startBackgroundWifiScanning();
   }
 
   @override
   void dispose() {
-    _stopWifiScan();
     _tabController.dispose();
     _scrollController.dispose();
-    _wifiScanTimer?.cancel();
+    _stopWifiScan();
+    _capturedImageFile = null; // Clear the stored image file reference
+    _faceVerificationResult = null;
     super.dispose();
   }
 
   // Build a WiFi status indicator widget
-  Widget _buildWifiStatusIndicator(wifi_provider.WifiConnectionStatus status, String sessionId) {
+  Widget _buildWifiStatusIndicator(
+    wifi_provider.WifiConnectionStatus status,
+    String sessionId,
+  ) {
     // Convert the provider's status to the widget's status enum
     final widgetStatus = _convertToWidgetStatus(status);
-    
+
     return wifi_indicator.WifiStatusIndicator(
       status: widgetStatus,
       sessionId: sessionId,
@@ -76,9 +86,11 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
       onRetry: () => _retryWifiConnection(sessionId),
     );
   }
-  
+
   // Convert provider status to widget status
-  wifi_indicator.WifiConnectionStatus _convertToWidgetStatus(wifi_provider.WifiConnectionStatus status) {
+  wifi_indicator.WifiConnectionStatus _convertToWidgetStatus(
+    wifi_provider.WifiConnectionStatus status,
+  ) {
     switch (status) {
       case wifi_provider.WifiConnectionStatus.searching:
         return wifi_indicator.WifiConnectionStatus.searching;
@@ -94,7 +106,7 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
         return wifi_indicator.WifiConnectionStatus.searching;
     }
   }
-  
+
   // Get status message based on WiFi status
   String _getStatusMessage(wifi_provider.WifiConnectionStatus status) {
     switch (status) {
@@ -112,10 +124,13 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
         return 'Checking WiFi status...';
     }
   }
-  
+
   // Retry WiFi connection
   void _retryWifiConnection(String sessionId) {
-    final wifiProvider = Provider.of<wifi_provider.WifiProvider>(context, listen: false);
+    final wifiProvider = Provider.of<wifi_provider.WifiProvider>(
+      context,
+      listen: false,
+    );
     wifiProvider.stopScanning().then((_) {
       Future.delayed(Duration(milliseconds: 500), () {
         wifiProvider.startScanningForSignals(
@@ -125,7 +140,7 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
       });
     });
   }
-  
+
   // Start background WiFi scanning
   void _startBackgroundWifiScanning() {
     // First check if we're already scanning
@@ -184,9 +199,11 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
                                 wifi_provider
                                     .WifiConnectionStatus
                                     .signalDetected) {
-                              setState(() {
-                                _wifiSignalDetectedMap[sessionId] = true;
-                              });
+                              if (mounted) {
+                                setState(() {
+                                  _wifiSignalDetectedMap[sessionId] = true;
+                                });
+                              }
                             }
                           });
                     }
@@ -311,6 +328,231 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
       _wifiScanTimer?.cancel();
       _isScanning = false;
     }
+  }
+
+  // Show face recognition dialog for attendance
+  void _showFaceRecognitionDialog(
+    BuildContext context,
+    String sessionId,
+    String studentId,
+    String studentName,
+  ) {
+    final attendanceProvider = Provider.of<AttendanceProvider>(
+      context,
+      listen: false,
+    );
+    final faceRecognitionProvider = Provider.of<FaceRecognitionProvider>(
+      context,
+      listen: false,
+    );
+
+    // State variables
+    bool isFaceVerified = false;
+    // Map<String, dynamic>? faceVerificationResult;  // Not needed, using class variable instead
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder:
+          (dialogContext) => StatefulBuilder(
+            builder: (context, setState) {
+              return AlertDialog(
+                title: Text(
+                  'Face Verification',
+                  style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+                ),
+                content: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: Colors.blue.shade200,
+                            width: 1.5,
+                          ),
+                        ),
+                        child: Column(
+                          children: [
+                            // Face Recognition Icon/Status
+                            Container(
+                              width: 64,
+                              height: 64,
+                              decoration: BoxDecoration(
+                                color: Colors.blue.shade100,
+                                shape: BoxShape.circle,
+                              ),
+                              child: Center(
+                                child: Icon(
+                                  isFaceVerified
+                                      ? Icons.check_circle
+                                      : Icons.face,
+                                  size: 32,
+                                  color:
+                                      isFaceVerified
+                                          ? Colors.green.shade700
+                                          : Colors.blue.shade700,
+                                ),
+                              ),
+                            ),
+
+                            const SizedBox(height: 16),
+
+                            Text(
+                              isFaceVerified
+                                  ? 'Face Verification Complete'
+                                  : 'Face Recognition',
+                              style: GoogleFonts.poppins(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                                color:
+                                    isFaceVerified
+                                        ? Colors.green.shade700
+                                        : Colors.blue.shade700,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+
+                            const SizedBox(height: 8),
+
+                            Text(
+                              isFaceVerified
+                                  ? 'Your identity has been verified'
+                                  : 'Take a photo to verify your identity',
+                              style: GoogleFonts.poppins(
+                                fontSize: 14,
+                                color: Colors.blue.shade700,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+
+                            const SizedBox(height: 16),
+
+                            if (!isFaceVerified)
+                              _buildFaceVerificationUI(
+                                studentId: studentId,
+                                faceRecognitionProvider:
+                                    faceRecognitionProvider,
+                                hasImage:
+                                    true, // Assume the student has a profile image
+                                isCheckingImage: false,
+                                onImageUploadComplete: (verified) {
+                                  if (verified) {
+                                    setState(() {
+                                      isFaceVerified = true;
+                                    });
+                                  }
+                                },
+                              ),
+
+                            if (isFaceVerified)
+                              Column(
+                                children: [
+                                  Container(
+                                    padding: EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: Colors.green.shade50,
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: Colors.green.shade200,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Icon(
+                                          Icons.check_circle,
+                                          color: Colors.green.shade700,
+                                        ),
+                                        SizedBox(width: 12),
+                                        Expanded(
+                                          child: Text(
+                                            'Your face has been successfully verified!',
+                                            style: GoogleFonts.poppins(
+                                              fontSize: 14,
+                                              color: Colors.green.shade700,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+
+                                  const SizedBox(height: 16),
+
+                                  ElevatedButton.icon(
+                                    onPressed: () async {
+                                      final success = await attendanceProvider
+                                          .markAttendanceWithFaceRecognition(
+                                            sessionId: sessionId,
+                                            studentId: studentId,
+                                            studentName: studentName,
+                                            imageFile:
+                                                _StudentAttendancePageState
+                                                    ._capturedImageFile ??
+                                                File(''),
+                                            verificationResult:
+                                                _StudentAttendancePageState
+                                                    ._faceVerificationResult,
+                                            wifiVerified:
+                                                false, // Not WiFi verified in this flow
+                                          );
+
+                                      if (context.mounted) {
+                                        Navigator.of(dialogContext).pop();
+
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          SnackBar(
+                                            content: Text(
+                                              success
+                                                  ? 'Attendance marked successfully'
+                                                  : 'Failed to mark attendance: ${attendanceProvider.error}',
+                                              style: GoogleFonts.poppins(),
+                                            ),
+                                            backgroundColor:
+                                                success
+                                                    ? Colors.green
+                                                    : Colors.red,
+                                            behavior: SnackBarBehavior.floating,
+                                          ),
+                                        );
+                                      }
+                                    },
+                                    icon: const Icon(
+                                      Icons.check_circle_outline,
+                                    ),
+                                    label: const Text('Submit Attendance'),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.green,
+                                      foregroundColor: Colors.white,
+                                      minimumSize: Size(double.infinity, 48),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () {
+                      Navigator.pop(dialogContext);
+                    },
+                    child: Text('Cancel', style: GoogleFonts.poppins()),
+                  ),
+                ],
+              );
+            },
+          ),
+    );
   }
 
   @override
@@ -664,12 +906,29 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
     Map<String, dynamic>? faceVerificationResult;
     Timer? statusCheckTimer;
 
+    // Cache for checkStudentImageExists result
+    bool? hasImageCache;
+
     showDialog(
       context: context,
       barrierDismissible: false,
       builder:
           (dialogContext) => StatefulBuilder(
             builder: (context, setState) {
+              // Check if student image exists when dialog opens
+              if (hasImageCache == null) {
+                // Initial image check
+                faceRecognitionProvider.checkStudentImageExists(studentId).then(
+                  (exists) {
+                    if (mounted) {
+                      setState(() {
+                        hasImageCache = exists;
+                      });
+                    }
+                  },
+                );
+              }
+
               // Start WiFi scanning when dialog opens
               if (!isScanning) {
                 setState(() {
@@ -683,9 +942,13 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
                   hasPermissions,
                 ) {
                   if (hasPermissions) {
-                    wifiProvider.startScanningForSignals(sessionId: sessionId).then((_) {
+                    wifiProvider.startScanningForSignals(sessionId: sessionId).then((
+                      _,
+                    ) {
                       // Check for error status after scanning starts
-                      if (wifiProvider.status == wifi_provider.WifiConnectionStatus.error && context.mounted) {
+                      if (wifiProvider.status ==
+                              wifi_provider.WifiConnectionStatus.error &&
+                          context.mounted) {
                         setState(() {
                           wifiStatus = wifi_provider.WifiConnectionStatus.error;
                           statusMessage =
@@ -728,24 +991,28 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
 
                           // Check for WiFi signal detection directly from the provider
                           bool foundSignal = false;
-                          if (status == wifi_provider.WifiConnectionStatus.signalDetected) {
+                          if (status ==
+                              wifi_provider
+                                  .WifiConnectionStatus
+                                  .signalDetected) {
                             foundSignal = true;
-                            
+
                             // Extract session details from the signal if available
-                            if (signal != null && signal.containsKey('sessionId')) {
+                            if (signal != null &&
+                                signal.containsKey('sessionId')) {
                               final detectedSessionId = signal['sessionId'];
                               print(
                                 '✅ Found WiFi signal for session: $detectedSessionId',
                               );
                             }
                           }
-                          
+
                           // If signal detected, update UI and mark attendance if needed
                           if (foundSignal) {
                             setState(() {
                               _wifiSignalDetectedMap[sessionId] = true;
                             });
-                            
+
                             // Cancel timer as we found the signal
                             timer.cancel();
                           }
@@ -771,9 +1038,11 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
                                     .get();
 
                             final hasValidSignal = signalQuery.docs.isNotEmpty;
-                            final sessionWifiEnabled = sessionDoc.exists && 
-                                sessionDoc.data() != null && 
-                                (sessionDoc.data() as Map<String, dynamic>).containsKey('wifiSignalActive') && 
+                            final sessionWifiEnabled =
+                                sessionDoc.exists &&
+                                sessionDoc.data() != null &&
+                                (sessionDoc.data() as Map<String, dynamic>)
+                                    .containsKey('wifiSignalActive') &&
                                 sessionDoc.data()!['wifiSignalActive'] == true;
 
                             print(
@@ -788,14 +1057,21 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
                               setState(() {
                                 // Accept a Firestore signal as a valid detection if direct WiFi detection fails
                                 // This is crucial to make the system work reliably
-                                if ((status == wifi_provider.WifiConnectionStatus.signalDetected &&
+                                if ((status ==
+                                            wifi_provider
+                                                .WifiConnectionStatus
+                                                .signalDetected &&
                                         signal != null &&
                                         signal['sessionId'] == sessionId) ||
                                     hasDetectedSignal ||
                                     hasValidSignal) {
                                   setState(() {
-                                    wifiStatus = wifi_provider.WifiConnectionStatus.connected;
-                                    wifiDetected = true; // Set wifiDetected to true when signal is detected
+                                    wifiStatus =
+                                        wifi_provider
+                                            .WifiConnectionStatus
+                                            .connected;
+                                    wifiDetected =
+                                        true; // Set wifiDetected to true when signal is detected
                                     statusMessage =
                                         'Connected to instructor WiFi signal! You can now verify your identity.';
                                   });
@@ -816,17 +1092,25 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
                                     wifiProvider.recordSignalDetection(
                                       signalData,
                                     );
-                                    wifiProvider.addDetectedSessionId(sessionId);
+                                    wifiProvider.addDetectedSessionId(
+                                      sessionId,
+                                    );
                                   }
                                 } else if (!hasValidSignal) {
                                   setState(() {
-                                    wifiStatus = wifi_provider.WifiConnectionStatus.error;
+                                    wifiStatus =
+                                        wifi_provider
+                                            .WifiConnectionStatus
+                                            .error;
                                     statusMessage =
                                         'No active WiFi signal detected. Ask instructor to enable WiFi.';
                                   });
                                 } else {
                                   setState(() {
-                                    wifiStatus = wifi_provider.WifiConnectionStatus.disconnected;
+                                    wifiStatus =
+                                        wifi_provider
+                                            .WifiConnectionStatus
+                                            .disconnected;
                                     statusMessage =
                                         'Signal is active but not detected. Move closer to instructor.';
                                   });
@@ -884,7 +1168,8 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
                           message: statusMessage,
                           onRetry: () {
                             setState(() {
-                              wifiStatus = wifi_provider.WifiConnectionStatus.searching;
+                              wifiStatus =
+                                  wifi_provider.WifiConnectionStatus.searching;
                               wifiDetected = false;
                               statusMessage =
                                   'Searching for instructor signal...';
@@ -1023,243 +1308,24 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
                               const SizedBox(height: 16),
 
                               if (wifiDetected && !isFaceVerified)
-                                FutureBuilder<bool>(
-                                  future: faceRecognitionProvider
-                                      .checkStudentImageExists(studentId),
-                                  builder: (context, snapshot) {
-                                    if (snapshot.connectionState ==
-                                        ConnectionState.waiting) {
-                                      return Center(
-                                        child: SizedBox(
-                                          width: 32,
-                                          height: 32,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 3,
-                                            valueColor:
-                                                AlwaysStoppedAnimation<Color>(
-                                                  Colors.blue.shade700,
-                                                ),
-                                          ),
-                                        ),
-                                      );
-                                    }
-
-                                    final hasImage = snapshot.data ?? false;
-
-                                    if (!hasImage) {
-                                      return Column(
-                                        children: [
-                                          Icon(
-                                            Icons.error_outline,
-                                            size: 36,
-                                            color: Colors.orange[700],
-                                          ),
-                                          const SizedBox(height: 12),
-                                          Text(
-                                            'No profile image found',
-                                            style: GoogleFonts.poppins(
-                                              fontSize: 16,
-                                              fontWeight: FontWeight.w500,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 8),
-                                          Text(
-                                            'Please upload your profile image to complete verification',
-                                            style: GoogleFonts.poppins(
-                                              fontSize: 14,
-                                            ),
-                                            textAlign: TextAlign.center,
-                                          ),
-                                          const SizedBox(height: 16),
-                                          Row(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.spaceEvenly,
-                                            children: [
-                                              Expanded(
-                                                child: ElevatedButton.icon(
-                                                  onPressed: () async {
-                                                    final result =
-                                                        await faceRecognitionProvider
-                                                            .uploadStudentImage(
-                                                              ImageSource
-                                                                  .camera,
-                                                            );
-                                                    if (result != null &&
-                                                        context.mounted) {
-                                                      setState(() {});
-                                                    }
-                                                  },
-                                                  icon: const Icon(
-                                                    Icons.camera_alt,
-                                                  ),
-                                                  label: const Text('Camera'),
-                                                ),
-                                              ),
-                                              SizedBox(width: 8),
-                                              Expanded(
-                                                child: ElevatedButton.icon(
-                                                  onPressed: () async {
-                                                    final result =
-                                                        await faceRecognitionProvider
-                                                            .uploadStudentImage(
-                                                              ImageSource
-                                                                  .gallery,
-                                                            );
-                                                    if (result != null &&
-                                                        context.mounted) {
-                                                      setState(() {});
-                                                    }
-                                                  },
-                                                  icon: const Icon(
-                                                    Icons.photo_library,
-                                                  ),
-                                                  label: const Text('Gallery'),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ],
-                                      );
-                                    }
-
-                                    return Builder(
-                                      builder: (context) {
-                                        // Local state for the button
-                                        bool isVerifying = false;
-                                        
-                                        return StatefulBuilder(
-                                          builder: (context, buttonSetState) {
-                                            return ElevatedButton.icon(
-                                              onPressed: (wifiDetected && !isVerifying)
-                                                  ? () async {
-                                                      // Set loading state
-                                                      buttonSetState(() {
-                                                        isVerifying = true;
-                                                      });
-                                                      
-                                                      try {
-                                                        // Get image from camera
-                                                        final picker = ImagePicker();
-                                                        final pickedFile =
-                                                            await picker.pickImage(
-                                                              source:
-                                                                  ImageSource.camera,
-                                                              imageQuality: 80,
-                                                            );
-
-                                                        if (pickedFile != null &&
-                                                            context.mounted) {
-                                                          final imageFile = File(
-                                                            pickedFile.path,
-                                                          );
-
-                                                          // Verify face
-                                                          final result =
-                                                              await faceRecognitionProvider
-                                                                  .compareFaces(
-                                                                    studentId:
-                                                                        studentId,
-                                                                    imageFile:
-                                                                        imageFile,
-                                                                  );
-
-                                                          if (result != null &&
-                                                              result['verification_match'] ==
-                                                                  true) {
-                                                            setState(() {
-                                                              isFaceVerified = true;
-                                                              faceVerificationResult =
-                                                                  result;
-                                                            });
-                                                          } else if (context
-                                                              .mounted) {
-                                                            ScaffoldMessenger.of(
-                                                              context,
-                                                            ).showSnackBar(
-                                                              SnackBar(
-                                                                content: Text(
-                                                                  'Face verification failed. Please try again.',
-                                                                  style:
-                                                                      GoogleFonts.poppins(),
-                                                                ),
-                                                                backgroundColor:
-                                                                    Colors.red,
-                                                                behavior:
-                                                                    SnackBarBehavior
-                                                                        .floating,
-                                                              ),
-                                                            );
-                                                          }
-                                                        }
-                                                      } catch (e) {
-                                                        if (context.mounted) {
-                                                          ScaffoldMessenger.of(
-                                                            context,
-                                                          ).showSnackBar(
-                                                            SnackBar(
-                                                              content: Text(
-                                                                'Error: $e',
-                                                                style:
-                                                                    GoogleFonts.poppins(),
-                                                              ),
-                                                              backgroundColor:
-                                                                  Colors.red,
-                                                              behavior:
-                                                                  SnackBarBehavior
-                                                                      .floating,
-                                                            ),
-                                                          );
-                                                        }
-                                                      } finally {
-                                                        // Reset loading state if still mounted
-                                                        if (context.mounted) {
-                                                          buttonSetState(() {
-                                                            isVerifying = false;
-                                                          });
-                                                        }
-                                                      }
-                                                    }
-                                                  : null,
-                                              icon: isVerifying
-                                                  ? SizedBox(
-                                                      width: 20,
-                                                      height: 20,
-                                                      child: CircularProgressIndicator(
-                                                        strokeWidth: 2,
-                                                        valueColor:
-                                                            AlwaysStoppedAnimation<
-                                                                Color>(Colors.white),
-                                                      ),
-                                                    )
-                                                  : const Icon(Icons.camera_alt),
-                                              label: Text(
-                                                isVerifying
-                                                    ? 'Verifying...'
-                                                    : (wifiDetected
-                                                        ? 'Take Photo to Verify'
-                                                        : 'Connect to Signal First'),
-                                                style: GoogleFonts.poppins(),
-                                              ),
-                                              style: ElevatedButton.styleFrom(
-                                                backgroundColor: wifiDetected
-                                                    ? Theme.of(context).primaryColor
-                                                    : Colors.grey.shade300,
-                                                foregroundColor: wifiDetected
-                                                    ? Colors.white
-                                                    : Colors.grey.shade700,
-                                                minimumSize: Size(double.infinity, 48),
-                                                disabledBackgroundColor:
-                                                    Colors.grey.shade200,
-                                                disabledForegroundColor:
-                                                    Colors.grey.shade500,
-                                              ),
-                                            );
-                                          },
-                                        );
+                                hasImageCache == null
+                                    ? _UploadProgressIndicator(
+                                      provider: faceRecognitionProvider,
+                                    )
+                                    : _buildFaceVerificationUI(
+                                      studentId: studentId,
+                                      faceRecognitionProvider:
+                                          faceRecognitionProvider,
+                                      hasImage: hasImageCache!,
+                                      isCheckingImage: false,
+                                      onImageUploadComplete: (verified) {
+                                        if (verified) {
+                                          setState(() {
+                                            isFaceVerified = true;
+                                          });
+                                        }
                                       },
-                                    );
-                                  },
-                                ),
+                                    ),
 
                               if (isFaceVerified)
                                 Column(
@@ -1297,24 +1363,43 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
 
                                     ElevatedButton.icon(
                                       onPressed: () async {
+                                        // Get the cached verification result and image file
+                                        final cachedVerificationResult = _StudentAttendancePageState._faceVerificationResult;
+                                        final cachedImageFile = _StudentAttendancePageState._capturedImageFile;
+                                        
+                                        print('Using cached verification result: $cachedVerificationResult');
+                                        print('Using cached image file: ${cachedImageFile?.path}');
+                                        
+                                        if (cachedVerificationResult == null) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            SnackBar(
+                                              content: Text(
+                                                'Face verification data not found. Please try again.',
+                                                style: GoogleFonts.poppins(),
+                                              ),
+                                              backgroundColor: Colors.red,
+                                              behavior: SnackBarBehavior.floating,
+                                            ),
+                                          );
+                                          return;
+                                        }
+                                        
                                         final success = await attendanceProvider
                                             .markAttendanceWithFaceRecognition(
                                               sessionId: sessionId,
                                               studentId: studentId,
                                               studentName: studentName,
-                                              imageFile: File(
-                                                '',
-                                              ), // Empty file as we already have verification result
-                                              verificationResult:
-                                                  faceVerificationResult,
-                                              wifiVerified:
-                                                  true, // Mark as WiFi verified
+                                              imageFile: cachedImageFile ?? File(''), // Use cached image file if available
+                                              verificationResult: cachedVerificationResult,
+                                              wifiVerified: true, // Mark as WiFi verified
                                             );
 
                                         if (context.mounted) {
                                           // Stop scanning and clean up timer
                                           statusCheckTimer?.cancel();
-                                          final wifiProvider = Provider.of<wifi_provider.WifiProvider>(context, listen: false);
+                                          final wifiProvider = Provider.of<
+                                            wifi_provider.WifiProvider
+                                          >(context, listen: false);
                                           wifiProvider.stopScanning();
                                           Navigator.of(dialogContext).pop();
 
@@ -1374,251 +1459,285 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
     );
   }
 
-  void _showFaceRecognitionDialog(
-    BuildContext context,
-    String sessionId,
-    String studentId,
-    String studentName,
-  ) {
-    final attendanceProvider = Provider.of<AttendanceProvider>(
-      context,
-      listen: false,
-    );
-    final faceRecognitionProvider = Provider.of<FaceRecognitionProvider>(
-      context,
-      listen: false,
-    );
+  // Helper method to build face verification section with cached result
+  Widget _buildFaceVerificationUI({
+    required String studentId,
+    required FaceRecognitionProvider faceRecognitionProvider,
+    required bool hasImage,
+    required bool isCheckingImage,
+    required Function(bool) onImageUploadComplete,
+  }) {
+    if (isCheckingImage) {
+      return _UploadProgressIndicator(provider: faceRecognitionProvider);
+    }
 
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder:
-          (context) => StatefulBuilder(
-            builder: (context, setState) {
-              return AlertDialog(
-                title: Text(
-                  'Face Recognition Attendance',
-                  style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
-                ),
-                content: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      FutureBuilder<bool>(
-                        future: faceRecognitionProvider.checkStudentImageExists(
-                          studentId,
-                        ),
-                        builder: (context, snapshot) {
-                          if (snapshot.connectionState ==
-                              ConnectionState.waiting) {
-                            return const Center(
-                              child: CircularProgressIndicator(),
-                            );
-                          }
-
-                          final hasImage = snapshot.data ?? false;
-
-                          if (!hasImage) {
-                            return Column(
-                              children: [
-                                Icon(
-                                  Icons.error_outline,
-                                  size: 48,
-                                  color: Colors.orange[700],
-                                ),
-                                const SizedBox(height: 16),
-                                Text(
-                                  'No profile image found',
-                                  style: GoogleFonts.poppins(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  'Please upload your profile image to use face recognition for attendance',
-                                  style: GoogleFonts.poppins(),
-                                  textAlign: TextAlign.center,
-                                ),
-                                const SizedBox(height: 16),
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceEvenly,
-                                  children: [
-                                    ElevatedButton.icon(
-                                      onPressed: () async {
-                                        final result =
-                                            await faceRecognitionProvider
-                                                .uploadStudentImage(
-                                                  ImageSource.camera,
-                                                );
-                                        if (result != null && context.mounted) {
-                                          setState(() {});
-                                        }
-                                      },
-                                      icon: const Icon(Icons.camera_alt),
-                                      label: const Text('Camera'),
-                                    ),
-                                    ElevatedButton.icon(
-                                      onPressed: () async {
-                                        final result =
-                                            await faceRecognitionProvider
-                                                .uploadStudentImage(
-                                                  ImageSource.gallery,
-                                                );
-                                        if (result != null && context.mounted) {
-                                          setState(() {});
-                                        }
-                                      },
-                                      icon: const Icon(Icons.photo_library),
-                                      label: const Text('Gallery'),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            );
-                          }
-
-                          return Column(
-                            children: [
-                              Text(
-                                'Take a selfie to verify your identity and mark attendance',
-                                style: GoogleFonts.poppins(),
-                                textAlign: TextAlign.center,
-                              ),
-                              const SizedBox(height: 16),
-                              Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceEvenly,
-                                children: [
-                                  ElevatedButton.icon(
-                                    onPressed: () async {
-                                      try {
-                                        // First get the image from camera
-                                        final picker = ImagePicker();
-                                        final pickedFile = await picker
-                                            .pickImage(
-                                              source: ImageSource.camera,
-                                              imageQuality: 80,
-                                            );
-
-                                        if (pickedFile != null &&
-                                            context.mounted) {
-                                          final imageFile = File(
-                                            pickedFile.path,
-                                          );
-
-                                          // Get comparison result from face recognition provider
-                                          final comparisonResult =
-                                              await faceRecognitionProvider
-                                                  .compareFaces(
-                                                    studentId: studentId,
-                                                    imageFile: imageFile,
-                                                  );
-
-                                          if (comparisonResult != null &&
-                                              comparisonResult['verification_match'] ==
-                                                  true) {
-                                            // If faces match, mark attendance - pass the verification result to avoid double API calls
-                                            final success = await attendanceProvider
-                                                .markAttendanceWithFaceRecognition(
-                                                  sessionId: sessionId,
-                                                  studentId: studentId,
-                                                  studentName: studentName,
-                                                  imageFile: imageFile,
-                                                  verificationResult:
-                                                      comparisonResult, // Pass result to avoid double API call
-                                                );
-
-                                            if (context.mounted) {
-                                              Navigator.of(context).pop();
-
-                                              // Force UI refresh after successful attendance marking
-                                              if (success) {
-                                                setState(() {
-                                                  // Refresh the parent widget
-                                                });
-                                              }
-
-                                              ScaffoldMessenger.of(
-                                                context,
-                                              ).showSnackBar(
-                                                SnackBar(
-                                                  content: Text(
-                                                    success
-                                                        ? 'Attendance marked successfully'
-                                                        : 'Failed to mark attendance: ${attendanceProvider.error}',
-                                                    style:
-                                                        GoogleFonts.poppins(),
-                                                  ),
-                                                  backgroundColor:
-                                                      success
-                                                          ? Colors.green
-                                                          : Colors.red,
-                                                  behavior:
-                                                      SnackBarBehavior.floating,
-                                                ),
-                                              );
-                                            }
-                                          } else {
-                                            // If faces don't match
-                                            if (context.mounted) {
-                                              ScaffoldMessenger.of(
-                                                context,
-                                              ).showSnackBar(
-                                                SnackBar(
-                                                  content: Text(
-                                                    'Face verification failed. Please try again.',
-                                                    style:
-                                                        GoogleFonts.poppins(),
-                                                  ),
-                                                  backgroundColor: Colors.red,
-                                                  behavior:
-                                                      SnackBarBehavior.floating,
-                                                ),
-                                              );
-                                            }
-                                          }
-                                        }
-                                      } catch (e) {
-                                        if (context.mounted) {
-                                          ScaffoldMessenger.of(
-                                            context,
-                                          ).showSnackBar(
-                                            SnackBar(
-                                              content: Text(
-                                                'Error: $e',
-                                                style: GoogleFonts.poppins(),
-                                              ),
-                                              backgroundColor: Colors.red,
-                                              behavior:
-                                                  SnackBarBehavior.floating,
-                                            ),
-                                          );
-                                        }
-                                      }
-                                    },
-                                    icon: const Icon(Icons.camera_alt),
-                                    label: const Text('Take Photo'),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          );
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: Text('Cancel', style: GoogleFonts.poppins()),
-                  ),
-                ],
-              );
-            },
+    if (!hasImage) {
+      return Column(
+        children: [
+          Icon(Icons.error_outline, size: 36, color: Colors.orange[700]),
+          const SizedBox(height: 12),
+          Text(
+            'No profile image found',
+            style: GoogleFonts.poppins(
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
+            ),
           ),
+          const SizedBox(height: 8),
+          Text(
+            'Please upload your profile image to complete verification',
+            style: GoogleFonts.poppins(fontSize: 14),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: () async {
+                    setState(() {
+                      isCheckingImage = true;
+                    });
+
+                    try {
+                      final result = await faceRecognitionProvider
+                          .uploadStudentImage(ImageSource.camera);
+
+                      if (result != null && mounted) {
+                        onImageUploadComplete(true);
+                      }
+                    } finally {
+                      if (mounted) {
+                        setState(() {
+                          isCheckingImage = false;
+                        });
+                      }
+                    }
+                  },
+                  icon: const Icon(Icons.camera_alt),
+                  label: const Text('Camera'),
+                ),
+              ),
+              SizedBox(width: 8),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: () async {
+                    setState(() {
+                      isCheckingImage = true;
+                    });
+
+                    try {
+                      final result = await faceRecognitionProvider
+                          .uploadStudentImage(ImageSource.gallery);
+
+                      if (result != null && mounted) {
+                        onImageUploadComplete(true);
+                      }
+                    } finally {
+                      if (mounted) {
+                        setState(() {
+                          isCheckingImage = false;
+                        });
+                      }
+                    }
+                  },
+                  icon: const Icon(Icons.photo_library),
+                  label: const Text('Gallery'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+    }
+
+    return Builder(
+      builder: (context) {
+        // Local state for the verification button
+        bool isLocalVerifying = false;
+
+        return StatefulBuilder(
+          builder: (context, buttonSetState) {
+            return ElevatedButton.icon(
+              onPressed:
+                  isLocalVerifying
+                      ? null
+                      : () async {
+                        // Set loading state
+                        buttonSetState(() {
+                          isLocalVerifying = true;
+                        });
+
+                        try {
+                          // Get image from camera
+                          final picker = ImagePicker();
+                          final pickedFile = await picker.pickImage(
+                            source: ImageSource.camera,
+                            imageQuality: 80,
+                          );
+
+                          if (pickedFile != null && context.mounted) {
+                            // Show a loading dialog with indicator
+                            showDialog(
+                              context: context,
+                              barrierDismissible: false,
+                              builder: (BuildContext context) {
+                                return AlertDialog(
+                                  content: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const CircularProgressIndicator(),
+                                      const SizedBox(height: 16),
+                                      Text(
+                                        'Verifying face...',
+                                        style: GoogleFonts.poppins(),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            );
+
+                            final imageFile = File(pickedFile.path);
+
+                            // Verify face
+                            final result = await faceRecognitionProvider
+                                .compareFaces(
+                                  studentId: studentId,
+                                  imageFile: imageFile,
+                                );
+
+                            // Close the loading dialog
+                            if (context.mounted) {
+                              Navigator.of(context).pop();
+                            }
+
+                            // Debug: print the result to see what's coming back from API
+                            print('Face verification result: $result');
+
+                            if (result != null) {
+                              print('Match value: ${result['match']}');
+                              print('Confidence: ${result['confidence']}');
+
+                              if (result['match'] == true && context.mounted) {
+                                // Store the verification result and image file using the utility manager
+                                ImageVerificationManager.saveVerificationData(
+                                  imageFile,
+                                  result,
+                                );
+
+                                // Update the class-level variables
+                                _StudentAttendancePageState
+                                        ._faceVerificationResult =
+                                    ImageVerificationManager.getCachedVerificationResult();
+                                _StudentAttendancePageState._capturedImageFile =
+                                    ImageVerificationManager.getCachedImageFile();
+
+                                print(
+                                  'Saved verification image: ${_StudentAttendancePageState._capturedImageFile?.path}',
+                                );
+
+                                // Use the callback to update parent state
+                                onImageUploadComplete(true);
+                              } else if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      'Face verification failed. Please try again. Confidence: ${result['confidence']}%',
+                                      style: GoogleFonts.poppins(),
+                                    ),
+                                    backgroundColor: Colors.red,
+                                    behavior: SnackBarBehavior.floating,
+                                  ),
+                                );
+                              }
+                            } else if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    'Face verification failed. Null response received.',
+                                    style: GoogleFonts.poppins(),
+                                  ),
+                                  backgroundColor: Colors.red,
+                                  behavior: SnackBarBehavior.floating,
+                                ),
+                              );
+                            }
+                          }
+                        } catch (e) {
+                          // Close the loading dialog if it's still open
+                          if (context.mounted &&
+                              Navigator.of(context).canPop()) {
+                            Navigator.of(context).pop();
+                          }
+
+                          if (context.mounted) {
+                            // Show a more detailed error message
+                            String errorMessage = 'Error: ';
+                            if (e.toString().contains('SocketException') ||
+                                e.toString().contains('Failed host lookup')) {
+                              errorMessage +=
+                                  'Cannot connect to face recognition server. Check your internet connection.';
+                            } else if (e.toString().contains('timed out')) {
+                              errorMessage +=
+                                  'Connection to server timed out. Please try again.';
+                            } else {
+                              errorMessage += e.toString();
+                            }
+
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  errorMessage,
+                                  style: GoogleFonts.poppins(),
+                                ),
+                                backgroundColor: Colors.red,
+                                behavior: SnackBarBehavior.floating,
+                                duration: Duration(seconds: 5),
+                              ),
+                            );
+
+                            // Log the error for debugging
+                            print('Face verification error: $e');
+                          }
+                        } finally {
+                          // Reset loading state if still mounted
+                          if (context.mounted) {
+                            buttonSetState(() {
+                              isLocalVerifying = false;
+                            });
+                          }
+                        }
+                      },
+              icon:
+                  isLocalVerifying
+                      ? SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Colors.white,
+                          ),
+                        ),
+                      )
+                      : const Icon(Icons.camera_alt),
+              label: Text(
+                isLocalVerifying ? 'Verifying...' : 'Take Photo to Verify',
+                style: GoogleFonts.poppins(),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Theme.of(context).primaryColor,
+                foregroundColor: Colors.white,
+                minimumSize: Size(double.infinity, 48),
+                disabledBackgroundColor: Colors.grey.shade200,
+                disabledForegroundColor: Colors.grey.shade500,
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -1781,7 +1900,8 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
 
     final firestore = FirebaseFirestore.instance;
     final now = DateTime.now();
-    final studentId = Provider.of<AuthProvider>(context, listen: false).user?.uid ?? '';
+    final studentId =
+        Provider.of<AuthProvider>(context, listen: false).user?.uid ?? '';
 
     // Get all active attendance sessions for the student's courses
     final querySnapshot =
@@ -1798,7 +1918,9 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
               (session) =>
                   session.endTime.isAfter(now) &&
                   // Exclude sessions where the student has already marked attendance
-                  !session.attendees.any((attendee) => attendee['studentId'] == studentId),
+                  !session.attendees.any(
+                    (attendee) => attendee['studentId'] == studentId,
+                  ),
             )
             .toList();
 
@@ -1866,7 +1988,7 @@ class _SessionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     // Check if WiFi is available in the session
     final wifiEnabled = session.signalTime != null;
-    
+
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       elevation: 0,
@@ -1876,129 +1998,141 @@ class _SessionCard extends StatelessWidget {
       ),
       child: InkWell(
         // Only allow tapping if the session is active and we're on the active tab
-        onTap: isActiveTab ? () async {
-          // Check if WiFi is enabled for this session
-          if (!wifiEnabled) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  'WiFi attendance is not enabled for this session',
-                  style: GoogleFonts.poppins(),
-                ),
-                backgroundColor: Colors.orange,
-                behavior: SnackBarBehavior.floating,
-              ),
-            );
-            return;
-          }
-          
-          // Show loading indicator
-          showDialog(
-            context: context,
-            barrierDismissible: false,
-            builder: (context) => const Center(
-              child: CircularProgressIndicator(),
-            ),
-          );
-          
-          try {
-            // Get the student's current WiFi information
-            final wifiProvider = Provider.of<wifi_provider.WifiProvider>(context, listen: false);
-            final studentWifiName = await wifiProvider.getCurrentWifiName();
-            
-            if (studentWifiName == null) {
-              // Close loading indicator
-              Navigator.of(context).pop();
-              
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    'Cannot mark attendance: WiFi is not enabled on your device',
-                    style: GoogleFonts.poppins(),
-                  ),
-                  backgroundColor: Colors.red,
-                  behavior: SnackBarBehavior.floating,
-                ),
-              );
-              return;
-            }
-            
-            // Check if the teacher's WiFi signal is active in Firestore
-            final signalDoc = await FirebaseFirestore.instance
-                .collection('attendance_signals')
-                .doc(session.id)
-                .get();
-            
-            // Close loading indicator
-            Navigator.of(context).pop();
-            
-            if (!signalDoc.exists || signalDoc.data() == null) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    'Cannot mark attendance: The instructor has not activated the WiFi signal yet',
-                    style: GoogleFonts.poppins(),
-                  ),
-                  backgroundColor: Colors.orange,
-                  behavior: SnackBarBehavior.floating,
-                ),
-              );
-              return;
-            }
-            
-            final signalData = signalDoc.data()!;
-            final teacherWifiName = signalData['wifiName'];
-            final wifiSignalActive = signalData['wifiSignalActive'] == true;
-            
-            print('🔍 Student WiFi: $studentWifiName, Teacher WiFi: $teacherWifiName, Signal Active: $wifiSignalActive');
-            
-            if (!wifiSignalActive) {
-              // Show error: WiFi signal not active
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    'Cannot mark attendance: The instructor has not activated the WiFi signal yet',
-                    style: GoogleFonts.poppins(),
-                  ),
-                  backgroundColor: Colors.orange,
-                  behavior: SnackBarBehavior.floating,
-                ),
-              );
-            } else if (studentWifiName != teacherWifiName) {
-              // Show error: Not on the same WiFi network
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    'Cannot mark attendance: You are not connected to the same WiFi network as your instructor (${teacherWifiName})',
-                    style: GoogleFonts.poppins(),
-                  ),
-                  backgroundColor: Colors.red,
-                  behavior: SnackBarBehavior.floating,
-                ),
-              );
-            } else {
-              // All conditions met, proceed with attendance marking
-              _handleAttendanceMarking(context);
-            }
-          } catch (e) {
-            // Close loading indicator if still showing
-            if (Navigator.canPop(context)) {
-              Navigator.of(context).pop();
-            }
-            
-            print('❌ Error checking WiFi networks: $e');
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  'Error checking WiFi networks: $e',
-                  style: GoogleFonts.poppins(),
-                ),
-                backgroundColor: Colors.red,
-                behavior: SnackBarBehavior.floating,
-              ),
-            );
-          }
-        } : null,
+        onTap:
+            isActiveTab
+                ? () async {
+                  // Check if WiFi is enabled for this session
+                  if (!wifiEnabled) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          'WiFi attendance is not enabled for this session',
+                          style: GoogleFonts.poppins(),
+                        ),
+                        backgroundColor: Colors.orange,
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                    return;
+                  }
+
+                  // Show loading indicator
+                  showDialog(
+                    context: context,
+                    barrierDismissible: false,
+                    builder:
+                        (context) =>
+                            const Center(child: CircularProgressIndicator()),
+                  );
+
+                  try {
+                    // Get the student's current WiFi information
+                    final wifiProvider =
+                        Provider.of<wifi_provider.WifiProvider>(
+                          context,
+                          listen: false,
+                        );
+                    final studentWifiName =
+                        await wifiProvider.getCurrentWifiName();
+
+                    if (studentWifiName == null) {
+                      // Close loading indicator
+                      Navigator.of(context).pop();
+
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            'Cannot mark attendance: WiFi is not enabled on your device',
+                            style: GoogleFonts.poppins(),
+                          ),
+                          backgroundColor: Colors.red,
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                      return;
+                    }
+
+                    // Check if the teacher's WiFi signal is active in Firestore
+                    final signalDoc =
+                        await FirebaseFirestore.instance
+                            .collection('attendance_signals')
+                            .doc(session.id)
+                            .get();
+
+                    // Close loading indicator
+                    Navigator.of(context).pop();
+
+                    if (!signalDoc.exists || signalDoc.data() == null) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            'Cannot mark attendance: The instructor has not activated the WiFi signal yet',
+                            style: GoogleFonts.poppins(),
+                          ),
+                          backgroundColor: Colors.orange,
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                      return;
+                    }
+
+                    final signalData = signalDoc.data()!;
+                    final teacherWifiName = signalData['wifiName'];
+                    final wifiSignalActive =
+                        signalData['wifiSignalActive'] == true;
+
+                    print(
+                      '🔍 Student WiFi: $studentWifiName, Teacher WiFi: $teacherWifiName, Signal Active: $wifiSignalActive',
+                    );
+
+                    if (!wifiSignalActive) {
+                      // Show error: WiFi signal not active
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            'Cannot mark attendance: The instructor has not activated the WiFi signal yet',
+                            style: GoogleFonts.poppins(),
+                          ),
+                          backgroundColor: Colors.orange,
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                    } else if (studentWifiName != teacherWifiName) {
+                      // Show error: Not on the same WiFi network
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            'Cannot mark attendance: You are not connected to the same WiFi network as your instructor (${teacherWifiName})',
+                            style: GoogleFonts.poppins(),
+                          ),
+                          backgroundColor: Colors.red,
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                    } else {
+                      // All conditions met, proceed with attendance marking
+                      _handleAttendanceMarking(context);
+                    }
+                  } catch (e) {
+                    // Close loading indicator if still showing
+                    if (Navigator.canPop(context)) {
+                      Navigator.of(context).pop();
+                    }
+
+                    print('❌ Error checking WiFi networks: $e');
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          'Error checking WiFi networks: $e',
+                          style: GoogleFonts.poppins(),
+                        ),
+                        backgroundColor: Colors.red,
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                  }
+                }
+                : null,
         borderRadius: BorderRadius.circular(16),
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -2064,10 +2198,6 @@ class _SessionCard extends StatelessWidget {
     final studentName =
         Provider.of<AuthProvider>(context, listen: false).user?.displayName ??
         '';
-    final wifiProvider = Provider.of<wifi_provider.WifiProvider>(
-      context,
-      listen: false,
-    );
     final isWifiEnabled = session.signalTime != null;
 
     // Get a reference to the parent state to access dialog methods
@@ -2368,48 +2498,66 @@ class _SessionCard extends StatelessWidget {
 
     // Use FutureBuilder to check if the WiFi signal is active in Firestore
     return FutureBuilder<DocumentSnapshot>(
-      future: FirebaseFirestore.instance
-          .collection('attendance_signals')
-          .doc(session.id)
-          .get(),
+      future:
+          FirebaseFirestore.instance
+              .collection('attendance_signals')
+              .doc(session.id)
+              .get(),
       builder: (context, snapshot) {
         // Default to false unless we can confirm the signal is active
         bool signalActive = false;
-        
+
         // Check if we have valid data and the signal is active
-        if (snapshot.hasData && snapshot.data != null && snapshot.data!.exists) {
+        if (snapshot.hasData &&
+            snapshot.data != null &&
+            snapshot.data!.exists) {
           final data = snapshot.data!.data() as Map<String, dynamic>?;
           signalActive = data != null && data['wifiSignalActive'] == true;
         }
-        
+
         // Check all conditions for enabling the button
-        final bool canMarkAttendance = wifiSignalDetected && 
-                                      session.signalTime != null && 
-                                      signalActive;
-        
+        final bool canMarkAttendance =
+            wifiSignalDetected && session.signalTime != null && signalActive;
+
         // Debug print to check values
-        print('📱 Button state: wifiSignalDetected=$wifiSignalDetected, signalTime=${session.signalTime}, signalActive=$signalActive, canMarkAttendance=$canMarkAttendance');
-        
+        print(
+          '📱 Button state: wifiSignalDetected=$wifiSignalDetected, signalTime=${session.signalTime}, signalActive=$signalActive, canMarkAttendance=$canMarkAttendance',
+        );
+
         return ElevatedButton(
-          onPressed: canMarkAttendance ? () => _handleAttendanceMarking(context) : null,
+          onPressed:
+              canMarkAttendance
+                  ? () => _handleAttendanceMarking(context)
+                  : null,
           style: ElevatedButton.styleFrom(
-            backgroundColor: canMarkAttendance
-                ? Theme.of(context).primaryColor
-                : Colors.grey.shade300,
-            foregroundColor: canMarkAttendance ? Colors.white : Colors.grey.shade700,
+            backgroundColor:
+                canMarkAttendance
+                    ? Theme.of(context).primaryColor
+                    : Colors.grey.shade300,
+            foregroundColor:
+                canMarkAttendance ? Colors.white : Colors.grey.shade700,
             elevation: 0,
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(session.signalTime != null ? Icons.wifi_find : Icons.face_outlined, size: 20),
+              Icon(
+                session.signalTime != null
+                    ? Icons.wifi_find
+                    : Icons.face_outlined,
+                size: 20,
+              ),
               const SizedBox(width: 8),
               Text(
-                session.signalTime != null 
-                  ? (canMarkAttendance ? 'Mark Attendance (WiFi Enabled)' : 'Waiting for Teacher Signal...') 
-                  : 'Mark Attendance',
+                session.signalTime != null
+                    ? (canMarkAttendance
+                        ? 'Mark Attendance (WiFi Enabled)'
+                        : 'Waiting for Teacher Signal...')
+                    : 'Mark Attendance',
                 style: GoogleFonts.poppins(fontWeight: FontWeight.w500),
               ),
             ],
@@ -2458,7 +2606,6 @@ class _TimeInfoItem extends StatelessWidget {
             color: Colors.grey[900],
             fontWeight: FontWeight.w500,
           ),
-          textAlign: TextAlign.center,
         ),
       ],
     );
@@ -2496,5 +2643,81 @@ class _SliverAppBarDelegate extends SliverPersistentHeaderDelegate {
     return maxHeight != oldDelegate.maxHeight ||
         minHeight != oldDelegate.minHeight ||
         child != oldDelegate.child;
+  }
+}
+
+// Custom upload progress indicator widget
+class _UploadProgressIndicator extends StatefulWidget {
+  final FaceRecognitionProvider provider;
+
+  const _UploadProgressIndicator({required this.provider});
+
+  @override
+  _UploadProgressIndicatorState createState() =>
+      _UploadProgressIndicatorState();
+}
+
+class _UploadProgressIndicatorState extends State<_UploadProgressIndicator> {
+  double _progress = 0.0;
+  late Timer _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    // Poll for progress updates frequently
+    _timer = Timer.periodic(Duration(milliseconds: 100), (_) {
+      final currentProgress = widget.provider.uploadProgress;
+      if (currentProgress != _progress) {
+        setState(() {
+          _progress = currentProgress;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isUploading = _progress > 0 && _progress < 1.0;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          width: 32,
+          height: 32,
+          child:
+              isUploading
+                  ? CircularProgressIndicator(
+                    strokeWidth: 3,
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      Colors.blue.shade700,
+                    ),
+                    value: _progress,
+                  )
+                  : CircularProgressIndicator(
+                    strokeWidth: 3,
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      Colors.blue.shade700,
+                    ),
+                  ),
+        ),
+        if (isUploading) ...[
+          const SizedBox(height: 8),
+          Text(
+            '${(_progress * 100).toStringAsFixed(0)}%',
+            style: GoogleFonts.poppins(
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ],
+    );
   }
 }
