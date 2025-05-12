@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../providers/attendance_provider.dart';
 import '../../providers/wifi_provider.dart' as wifi_provider;
-import '../../providers/auth_provider.dart'; // Added import for AuthProvider
+import '../../providers/auth_provider.dart'; 
 import '../../models/attendance_session.dart';
+import '../../widgets/student_attendance_item.dart';
 
 class AttendanceSessionDetailPage extends StatefulWidget {
   final String sessionId;
@@ -542,16 +544,21 @@ class _AttendanceSessionDetailPageState
                   ),
                 ),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                  padding: const EdgeInsets.only(top: 24, bottom: 8),
                   child: Row(
                     children: [
-                      Icon(Icons.people, size: 20, color: theme.primaryColor),
+                      Icon(
+                        Icons.people_alt_rounded,
+                        color: theme.primaryColor,
+                        size: 20,
+                      ),
                       const SizedBox(width: 8),
                       Text(
                         'Attendance List',
                         style: GoogleFonts.poppins(
                           fontSize: 18,
                           fontWeight: FontWeight.w600,
+                          color: Colors.grey[800],
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -565,7 +572,7 @@ class _AttendanceSessionDetailPageState
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Text(
-                          attendees.length.toString(),
+                          '${attendees.length}',
                           style: GoogleFonts.poppins(
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
@@ -577,224 +584,49 @@ class _AttendanceSessionDetailPageState
                   ),
                 ),
                 attendees.isEmpty
-                    ? Padding(
-                      padding: const EdgeInsets.all(50),
-                      child: Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(20),
-                              decoration: BoxDecoration(
-                                color: Colors.grey[100],
-                                shape: BoxShape.circle,
-                              ),
-                              child: Icon(
-                                Icons.people_outline,
-                                size: 48,
-                                color: theme.primaryColor.withOpacity(0.5),
-                              ),
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              'No Students Present',
-                              style: GoogleFonts.poppins(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.grey[800],
-                              ),
-                            ),
-                            if (isActive) ...[
-                              const SizedBox(height: 8),
-                              Text(
-                                _isBroadcasting
-                                    ? 'WiFi signal is active. Waiting for students on the same network to mark attendance.'
-                                    : 'Tap "Send Signal" to enable attendance marking for students on the same WiFi network',
-                                style: GoogleFonts.poppins(
-                                  fontSize: 14,
-                                  color: Colors.grey[600],
-                                ),
-                                textAlign: TextAlign.center,
-                              ),
-                            ],
-                          ],
+                  ? Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.person_off_rounded,
+                          size: 56,
+                          color: Colors.grey[400],
                         ),
-                      ),
-                    )
-                    : ListView.builder(
-                      shrinkWrap: true,
-                      physics: NeverScrollableScrollPhysics(),
-                      padding: const EdgeInsets.all(16),
-                      itemCount: attendees.length,
-                      itemBuilder: (context, index) {
-                        final attendee = attendees[index];
-                        final markedAt =
-                            (attendee['markedAt'] as dynamic).toDate();
-                        final verificationMethod =
-                            attendee['verificationMethod'] ?? 'Manual';
-                        final wifiVerified = attendee['wifiVerified'] ?? false;
-
-                        return Container(
-                          margin: const EdgeInsets.only(bottom: 12),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.03),
-                                blurRadius: 8,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
+                        const SizedBox(height: 16),
+                        Text(
+                          'No Students Present',
+                          style: GoogleFonts.poppins(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.grey[800],
                           ),
-                          child: ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 8,
+                        ),
+                        if (isActive) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            _isBroadcasting
+                                ? 'WiFi signal is active. Waiting for students on the same network to mark attendance.'
+                                : 'Tap "Send Signal" to enable attendance marking for students on the same WiFi network',
+                            style: GoogleFonts.poppins(
+                              fontSize: 14,
+                              color: Colors.grey[600],
                             ),
-                            leading: CircleAvatar(
-                              radius: 24,
-                              backgroundColor: theme.primaryColor.withOpacity(
-                                0.1,
-                              ),
-                              child: Text(
-                                (attendee['studentName'] != null && attendee['studentName'].toString().isNotEmpty)
-                                    ? attendee['studentName'].toString().substring(0, 1).toUpperCase()
-                                    : '?',
-                                style: GoogleFonts.poppins(
-                                  color: theme.primaryColor,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                            title: Row(
-                              children: [
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        attendee['studentName'] ?? 'Unknown Student',
-                                        style: GoogleFonts.poppins(
-                                          fontWeight: FontWeight.w600,
-                                          fontSize: 15,
-                                        ),
-                                      ),
-                                      Text(
-                                        'ID: ${attendee['studentId']}',
-                                        style: GoogleFonts.poppins(
-                                          fontSize: 12,
-                                          color: Colors.grey[600],
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                if (wifiVerified)
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 2,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Colors.blue.shade50,
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(
-                                          Icons.wifi,
-                                          size: 12,
-                                          color: Colors.blue.shade700,
-                                        ),
-                                        const SizedBox(width: 4),
-                                        Text(
-                                          'WiFi',
-                                          style: GoogleFonts.poppins(
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.w500,
-                                            color: Colors.blue.shade700,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                              ],
-                            ),
-                            subtitle: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const SizedBox(height: 4),
-                                Wrap(
-                                  spacing: 4, // horizontal spacing
-                                  runSpacing: 4, // vertical spacing
-                                  children: [
-                                    Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(
-                                          Icons.access_time,
-                                          size: 14,
-                                          color: Colors.grey[600],
-                                        ),
-                                        const SizedBox(width: 4),
-                                        Text(
-                                          DateFormat('h:mm a').format(markedAt),
-                                          style: GoogleFonts.poppins(
-                                            fontSize: 13,
-                                            color: Colors.grey[600],
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(
-                                          verificationMethod == 'Face Recognition'
-                                              ? Icons.face
-                                              : Icons.check_circle,
-                                          size: 14,
-                                          color: Colors.grey[600],
-                                        ),
-                                        const SizedBox(width: 4),
-                                        Flexible(
-                                          child: Text(
-                                            verificationMethod,
-                                            style: GoogleFonts.poppins(
-                                              fontSize: 13,
-                                              color: Colors.grey[600],
-                                            ),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                            trailing: Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: Colors.green.shade50,
-                                shape: BoxShape.circle,
-                              ),
-                              child: Icon(
-                                Icons.check,
-                                color: Colors.green.shade600,
-                                size: 16,
-                              ),
-                            ),
+                            textAlign: TextAlign.center,
                           ),
-                        );
-                      },
+                        ],
+                      ],
                     ),
+                  )
+                  : ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: attendees.length,
+                    itemBuilder: (context, index) {
+                      final attendee = attendees[index];
+                      return StudentAttendanceItem(attendee: attendee);
+                    },
+                  ),
               ],
             ),
           );

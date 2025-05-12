@@ -158,6 +158,24 @@ class AttendanceService {
     Map<String, dynamic>? verificationData,
     bool wifiVerified = false, // New param to indicate WiFi verification
   }) async {
+    // Ensure we have a valid student name by fetching from Firestore if needed
+    String validStudentName = studentName;
+    if (validStudentName.isEmpty || validStudentName == 'Unknown Student') {
+      try {
+        // Attempt to fetch student name from users collection
+        final userDoc = await _firestore.collection('users').doc(studentId).get();
+        if (userDoc.exists && userDoc.data() != null) {
+          final userData = userDoc.data()!;
+          if (userData.containsKey('fullName') && userData['fullName'] != null) {
+            validStudentName = userData['fullName'];
+          }
+        }
+      } catch (e) {
+        print('Error fetching student name: $e');
+        // Continue with the provided name if there's an error
+      }
+    }
+    
     // Check if the session is active
     final sessionDoc = await _firestore
         .collection('attendance_sessions')
@@ -217,7 +235,7 @@ class AttendanceService {
       'attendees': FieldValue.arrayUnion([
         {
           'studentId': studentId,
-          'studentName': studentName,
+          'studentName': validStudentName, // Use the validated student name
           'markedAt': Timestamp.now(),
           'verificationMethod': verificationMethod,
           'verificationData': verificationData,

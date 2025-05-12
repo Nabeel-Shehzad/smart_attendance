@@ -1364,34 +1364,51 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
                                     ElevatedButton.icon(
                                       onPressed: () async {
                                         // Get the cached verification result and image file
-                                        final cachedVerificationResult = _StudentAttendancePageState._faceVerificationResult;
-                                        final cachedImageFile = _StudentAttendancePageState._capturedImageFile;
-                                        
-                                        print('Using cached verification result: $cachedVerificationResult');
-                                        print('Using cached image file: ${cachedImageFile?.path}');
-                                        
+                                        final cachedVerificationResult =
+                                            _StudentAttendancePageState
+                                                ._faceVerificationResult;
+                                        final cachedImageFile =
+                                            _StudentAttendancePageState
+                                                ._capturedImageFile;
+
+                                        print(
+                                          'Using cached verification result: $cachedVerificationResult',
+                                        );
+                                        print(
+                                          'Using cached image file: ${cachedImageFile?.path}',
+                                        );
+
                                         if (cachedVerificationResult == null) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
+                                          ScaffoldMessenger.of(
+                                            context,
+                                          ).showSnackBar(
                                             SnackBar(
                                               content: Text(
                                                 'Face verification data not found. Please try again.',
                                                 style: GoogleFonts.poppins(),
                                               ),
                                               backgroundColor: Colors.red,
-                                              behavior: SnackBarBehavior.floating,
+                                              behavior:
+                                                  SnackBarBehavior.floating,
                                             ),
                                           );
                                           return;
                                         }
-                                        
+
                                         final success = await attendanceProvider
                                             .markAttendanceWithFaceRecognition(
                                               sessionId: sessionId,
                                               studentId: studentId,
                                               studentName: studentName,
-                                              imageFile: cachedImageFile ?? File(''), // Use cached image file if available
-                                              verificationResult: cachedVerificationResult,
-                                              wifiVerified: true, // Mark as WiFi verified
+                                              imageFile:
+                                                  cachedImageFile ??
+                                                  File(
+                                                    '',
+                                                  ), // Use cached image file if available
+                                              verificationResult:
+                                                  cachedVerificationResult,
+                                              wifiVerified:
+                                                  true, // Mark as WiFi verified
                                             );
 
                                         if (context.mounted) {
@@ -2165,7 +2182,7 @@ class _SessionCard extends StatelessWidget {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'This session requires BLE proximity verification',
+                          'This session requires WIFI proximity verification',
                           style: GoogleFonts.poppins(
                             fontSize: 13,
                             color: Colors.blue.shade700,

@@ -165,6 +165,15 @@ class AuthService {
     return null;
   }
   
+  // Send password reset email
+  Future<void> resetPassword(String email) async {
+    try {
+      await _auth.sendPasswordResetEmail(email: email);
+    } catch (e) {
+      rethrow;
+    }
+  }
+  
   // Stream to monitor authentication state changes
   Stream<User?> get authStateChanges => _auth.authStateChanges();
 }

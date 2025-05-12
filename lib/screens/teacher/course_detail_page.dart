@@ -34,21 +34,7 @@ class CourseDetailPage extends StatelessWidget {
             color: Colors.white,
           ),
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.edit, color: Colors.white),
-            onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    'Edit course functionality coming soon',
-                    style: GoogleFonts.poppins(),
-                  ),
-                ),
-              );
-            },
-          ),
-        ],
+        
       ),
       body: StreamBuilder(
         stream: courseProvider.getCourse(courseId),
