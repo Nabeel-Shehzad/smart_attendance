@@ -13,7 +13,15 @@ import '../../providers/face_recognition_provider.dart';
 import '../../providers/wifi_provider.dart' as wifi_provider;
 import '../../models/attendance_session.dart';
 import '../../widgets/wifi_status_indicator.dart' as wifi_indicator;
+import '../../widgets/upload_progress_indicator.dart';
 import '../../utils/image_verification_manager.dart';
+
+// This enum helps distinguish between different states of the face verification process
+enum FaceVerificationState {
+  noImage, // No profile image exists
+  hasImage, // Profile image exists but face not verified
+  faceVerified, // Face has been verified
+}
 
 class StudentAttendancePage extends StatefulWidget {
   const StudentAttendancePage({Key? key}) : super(key: key);
@@ -440,8 +448,13 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
                                 hasImage:
                                     true, // Assume the student has a profile image
                                 isCheckingImage: false,
-                                onImageUploadComplete: (verified) {
-                                  if (verified) {
+                                onImageUploadComplete: (
+                                  verified,
+                                  isProfileUpload,
+                                ) {
+                                  // Only set face as verified if this was a face verification
+                                  // not just a profile image upload
+                                  if (verified && !isProfileUpload) {
                                     setState(() {
                                       isFaceVerified = true;
                                     });
@@ -909,6 +922,9 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
     // Cache for checkStudentImageExists result
     bool? hasImageCache;
 
+    // Track the current verification state
+    FaceVerificationState verificationState = FaceVerificationState.noImage;
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -1309,7 +1325,7 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
 
                               if (wifiDetected && !isFaceVerified)
                                 hasImageCache == null
-                                    ? _UploadProgressIndicator(
+                                    ? UploadProgressIndicator(
                                       provider: faceRecognitionProvider,
                                     )
                                     : _buildFaceVerificationUI(
@@ -1318,11 +1334,20 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
                                           faceRecognitionProvider,
                                       hasImage: hasImageCache!,
                                       isCheckingImage: false,
-                                      onImageUploadComplete: (verified) {
-                                        if (verified) {
+                                      onImageUploadComplete: (
+                                        verified,
+                                        isProfileUpload,
+                                      ) {
+                                        // Only set face as verified if this was a face verification
+                                        // not just a profile image upload
+                                        if (verified && !isProfileUpload) {
                                           setState(() {
                                             isFaceVerified = true;
                                           });
+                                        } else if (verified &&
+                                            isProfileUpload) {
+                                          // If it was just a profile upload, refresh the UI
+                                          setState(() {});
                                         }
                                       },
                                     ),
@@ -1420,24 +1445,115 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
                                           wifiProvider.stopScanning();
                                           Navigator.of(dialogContext).pop();
 
-                                          ScaffoldMessenger.of(
-                                            context,
-                                          ).showSnackBar(
-                                            SnackBar(
-                                              content: Text(
-                                                success
-                                                    ? 'Attendance marked successfully'
-                                                    : 'Failed to mark attendance: ${attendanceProvider.error}',
-                                                style: GoogleFonts.poppins(),
-                                              ),
-                                              backgroundColor:
-                                                  success
-                                                      ? Colors.green
-                                                      : Colors.red,
-                                              behavior:
-                                                  SnackBarBehavior.floating,
-                                            ),
+                                          // Refresh UI to update attendance status
+                                          Future.delayed(
+                                            Duration(milliseconds: 500),
+                                            () {
+                                              if (mounted) {
+                                                setState(() {
+                                                  // Trigger a UI rebuild
+                                                });
+                                              }
+                                            },
                                           );
+
+                                          // Get the attendance status from Firestore to show appropriate message
+                                          FirebaseFirestore.instance
+                                              .collection('attendance_sessions')
+                                              .doc(sessionId)
+                                              .get()
+                                              .then((doc) {
+                                                if (doc.exists &&
+                                                    context.mounted) {
+                                                  final data =
+                                                      doc.data()
+                                                          as Map<
+                                                            String,
+                                                            dynamic
+                                                          >;
+                                                  final attendees = List<
+                                                    Map<String, dynamic>
+                                                  >.from(
+                                                    data['attendees'] ?? [],
+                                                  );
+                                                  final myAttendance = attendees
+                                                      .firstWhere(
+                                                        (a) =>
+                                                            a['studentId'] ==
+                                                            studentId,
+                                                        orElse:
+                                                            () =>
+                                                                <
+                                                                  String,
+                                                                  dynamic
+                                                                >{},
+                                                      );
+
+                                                  final status =
+                                                      myAttendance['status'] ??
+                                                      'unknown';
+                                                  String message =
+                                                      'Attendance marked successfully!';
+                                                  Color bgColor = Colors.green;
+
+                                                  if (status == 'late') {
+                                                    message =
+                                                        'Attendance marked as LATE - you arrived after the threshold time.';
+                                                    bgColor = Colors.orange;
+                                                  } else if (status ==
+                                                      'absent') {
+                                                    message =
+                                                        'Attendance marked as ABSENT - you arrived after the cutoff time.';
+                                                    bgColor = Colors.red;
+                                                  } else if (status ==
+                                                      'present') {
+                                                    message =
+                                                        'Attendance marked as PRESENT - you arrived on time!';
+                                                    bgColor = Colors.green;
+                                                  }
+
+                                                  ScaffoldMessenger.of(
+                                                    context,
+                                                  ).showSnackBar(
+                                                    SnackBar(
+                                                      content: Text(
+                                                        message,
+                                                        style:
+                                                            GoogleFonts.poppins(),
+                                                      ),
+                                                      backgroundColor: bgColor,
+                                                      behavior:
+                                                          SnackBarBehavior
+                                                              .floating,
+                                                      duration: Duration(
+                                                        seconds: 5,
+                                                      ),
+                                                    ),
+                                                  );
+                                                } else {
+                                                  // Fall back to basic message if can't get status
+                                                  ScaffoldMessenger.of(
+                                                    context,
+                                                  ).showSnackBar(
+                                                    SnackBar(
+                                                      content: Text(
+                                                        success
+                                                            ? 'Attendance marked successfully!'
+                                                            : 'Failed to mark attendance: ${attendanceProvider.error}',
+                                                        style:
+                                                            GoogleFonts.poppins(),
+                                                      ),
+                                                      backgroundColor:
+                                                          success
+                                                              ? Colors.green
+                                                              : Colors.red,
+                                                      behavior:
+                                                          SnackBarBehavior
+                                                              .floating,
+                                                    ),
+                                                  );
+                                                }
+                                              });
                                         }
                                       },
                                       icon: const Icon(
@@ -1482,10 +1598,10 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
     required FaceRecognitionProvider faceRecognitionProvider,
     required bool hasImage,
     required bool isCheckingImage,
-    required Function(bool) onImageUploadComplete,
+    required Function(bool, bool) onImageUploadComplete,
   }) {
     if (isCheckingImage) {
-      return _UploadProgressIndicator(provider: faceRecognitionProvider);
+      return UploadProgressIndicator(provider: faceRecognitionProvider);
     }
 
     if (!hasImage) {
@@ -1522,7 +1638,29 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
                           .uploadStudentImage(ImageSource.camera);
 
                       if (result != null && mounted) {
-                        onImageUploadComplete(true);
+                        // Clear any existing verification result since this is just a profile upload
+                        _StudentAttendancePageState._faceVerificationResult =
+                            null;
+
+                        // Pass true for isProfileUpload since this is just uploading a profile image
+                        onImageUploadComplete(true, true);
+
+                        // Don't dismiss the dialog after profile image upload
+                        // Instead, show a message within the dialog that the profile image was uploaded
+
+                        // Show a message to the user that they need to verify their face
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                'Profile image uploaded. Now take a photo to verify your identity.',
+                                style: GoogleFonts.poppins(),
+                              ),
+                              backgroundColor: Colors.blue,
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        }
                       }
                     } finally {
                       if (mounted) {
@@ -1549,7 +1687,29 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
                           .uploadStudentImage(ImageSource.gallery);
 
                       if (result != null && mounted) {
-                        onImageUploadComplete(true);
+                        // Clear any existing verification result since this is just a profile upload
+                        _StudentAttendancePageState._faceVerificationResult =
+                            null;
+
+                        // Pass true for isProfileUpload since this is just uploading a profile image
+                        onImageUploadComplete(true, true);
+
+                        // Don't dismiss the dialog after profile image upload
+                        // Instead, show a message within the dialog that the profile image was uploaded
+
+                        // Show a message to the user that they need to verify their face
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                'Profile image uploaded. Now take a photo to verify your identity.',
+                                style: GoogleFonts.poppins(),
+                              ),
+                              backgroundColor: Colors.blue,
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        }
                       }
                     } finally {
                       if (mounted) {
@@ -1623,9 +1783,7 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
                                 .compareFaces(
                                   studentId: studentId,
                                   imageFile: imageFile,
-                                );
-
-                            // Close the loading dialog
+                                ); // Close the loading dialog
                             if (context.mounted) {
                               Navigator.of(context).pop();
                             }
@@ -1655,9 +1813,151 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
                                   'Saved verification image: ${_StudentAttendancePageState._capturedImageFile?.path}',
                                 );
 
+                                // Don't close the dialog after successful verification
+                                // Instead, keep it open to show the Submit Attendance button
+
                                 // Use the callback to update parent state
-                                onImageUploadComplete(true);
+                                // Pass false for isProfileUpload since this is actual face verification
+                                onImageUploadComplete(true, false);
+
+                                // Now call attendanceProvider to mark attendance with the WiFi verification status
+                                // Get the attendanceProvider
+                                final attendanceProvider =
+                                    Provider.of<AttendanceProvider>(
+                                      context,
+                                      listen: false,
+                                    );
+
+                                // Get the authProvider to get student info
+                                final authProvider = Provider.of<AuthProvider>(
+                                  context,
+                                  listen: false,
+                                );
+
+                                final studentId = authProvider.user?.uid ?? '';
+                                final studentName =
+                                    authProvider.user?.displayName ?? '';
+
+                                // Call markAttendanceWithFaceRecognition with the verified result
+                                if (studentId.isNotEmpty) {
+                                  // The sessionId is passed from the calling function, so you need to get it from there
+                                  // For this implementation, get the active session ID for the student
+                                  try {
+                                    // Get the active WiFi sessions for this student
+                                    final sessionIds =
+                                        await _getActiveSessionIdsForStudent(
+                                          studentId,
+                                        );
+                                    if (sessionIds.isNotEmpty) {
+                                      // Mark attendance for each active session
+                                      for (final sessionId in sessionIds) {
+                                        // Check if WiFi signal was detected for this session
+                                        final wifiVerified =
+                                            _wifiSignalDetectedMap[sessionId] ??
+                                            false;
+
+                                        final success = await attendanceProvider
+                                            .markAttendanceWithFaceRecognition(
+                                              sessionId: sessionId,
+                                              studentId: studentId,
+                                              studentName: studentName,
+                                              imageFile: imageFile,
+                                              verificationResult: result,
+                                              wifiVerified: wifiVerified,
+                                            );
+
+                                        if (success && context.mounted) {
+                                          // Get the attendance status from Firestore to show appropriate message
+                                          final sessionDoc =
+                                              await FirebaseFirestore.instance
+                                                  .collection(
+                                                    'attendance_sessions',
+                                                  )
+                                                  .doc(sessionId)
+                                                  .get();
+
+                                          if (sessionDoc.exists &&
+                                              context.mounted) {
+                                            final data =
+                                                sessionDoc.data()
+                                                    as Map<String, dynamic>;
+                                            final attendees =
+                                                List<Map<String, dynamic>>.from(
+                                                  data['attendees'] ?? [],
+                                                );
+                                            final myAttendance = attendees
+                                                .firstWhere(
+                                                  (a) =>
+                                                      a['studentId'] ==
+                                                      studentId,
+                                                  orElse:
+                                                      () => <String, dynamic>{},
+                                                );
+
+                                            final status =
+                                                myAttendance['status'] ??
+                                                'unknown';
+                                            String message =
+                                                'Attendance marked successfully!';
+                                            Color bgColor = Colors.green;
+
+                                            if (status == 'late') {
+                                              message =
+                                                  'Attendance marked as LATE - you arrived after the threshold time.';
+                                              bgColor = Colors.orange;
+                                            } else if (status == 'absent') {
+                                              message =
+                                                  'Attendance marked as ABSENT - you arrived after the cutoff time.';
+                                              bgColor = Colors.red;
+                                            } else if (status == 'present') {
+                                              message =
+                                                  'Attendance marked as PRESENT - you arrived on time!';
+                                              bgColor = Colors.green;
+                                            }
+
+                                            ScaffoldMessenger.of(
+                                              context,
+                                            ).showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                  message,
+                                                  style: GoogleFonts.poppins(),
+                                                ),
+                                                backgroundColor: bgColor,
+                                                behavior:
+                                                    SnackBarBehavior.floating,
+                                                duration: Duration(seconds: 5),
+                                              ),
+                                            );
+                                          } else {
+                                            // Fall back to basic message if can't get status
+                                            ScaffoldMessenger.of(
+                                              context,
+                                            ).showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                  'Attendance marked successfully!',
+                                                  style: GoogleFonts.poppins(),
+                                                ),
+                                                backgroundColor: Colors.green,
+                                                behavior:
+                                                    SnackBarBehavior.floating,
+                                              ),
+                                            );
+                                          }
+                                        }
+                                      }
+                                    }
+                                  } catch (e) {
+                                    print('Error marking attendance: $e');
+                                  }
+                                }
                               } else if (context.mounted) {
+                                // Close dialog before showing SnackBar for error too
+                                if (Navigator.of(context).canPop()) {
+                                  Navigator.of(context).pop();
+                                }
+
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(
                                     content: Text(
@@ -1670,6 +1970,11 @@ class _StudentAttendancePageState extends State<StudentAttendancePage>
                                 );
                               }
                             } else if (context.mounted) {
+                              // Close dialog before showing SnackBar for null response too
+                              if (Navigator.of(context).canPop()) {
+                                Navigator.of(context).pop();
+                              }
+
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
                                   content: Text(
@@ -2281,35 +2586,67 @@ class _SessionCard extends StatelessWidget {
 
   Widget _buildAttendanceStatus(BuildContext context) {
     final studentId = Provider.of<AuthProvider>(context).user?.uid ?? '';
-    final wasPresent = session.attendees.any(
+    final attendeeRecord = session.attendees.firstWhere(
       (attendee) => attendee['studentId'] == studentId,
+      orElse: () => <String, dynamic>{},
     );
+    
+    final bool wasPresent = attendeeRecord.isNotEmpty;
+    String status = 'Absent';
+    Color statusColor = Colors.red[700]!;
+    Color bgColor = Colors.red[50]!;
+    Color borderColor = Colors.red[100]!;
+    IconData statusIcon = Icons.cancel_outlined;
+    
+    if (wasPresent) {
+      // Get the actual status from Firebase
+      status = attendeeRecord['status'] ?? 'present';
+      
+      // Set colors and icons based on status
+      if (status == 'late') {
+        statusColor = Colors.orange[700]!;
+        bgColor = Colors.orange[50]!;
+        borderColor = Colors.orange[100]!;
+        statusIcon = Icons.watch_later_outlined;
+      } else if (status == 'absent') {
+        statusColor = Colors.red[700]!;
+        bgColor = Colors.red[50]!;
+        borderColor = Colors.red[100]!;
+        statusIcon = Icons.cancel_outlined;
+      } else { // present
+        statusColor = Colors.green[700]!;
+        bgColor = Colors.green[50]!;
+        borderColor = Colors.green[100]!;
+        statusIcon = Icons.check_circle_outline;
+      }
+    }
+    
+    // Capitalize the first letter of the status
+    final displayStatus = status.substring(0, 1).toUpperCase() + status.substring(1);
 
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
-        color: wasPresent ? Colors.green[50] : Colors.red[50],
+        color: bgColor,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: wasPresent ? Colors.green[100]! : Colors.red[100]!,
-        ),
+        border: Border.all(color: borderColor),
       ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(
-            wasPresent ? Icons.check_circle_outline : Icons.cancel_outlined,
+            statusIcon,
             size: 20,
-            color: wasPresent ? Colors.green[700] : Colors.red[700],
+            color: statusColor,
           ),
           const SizedBox(width: 8),
           Text(
-            wasPresent ? 'Present' : 'Absent',
+            displayStatus,
             style: GoogleFonts.poppins(
               fontSize: 14,
               fontWeight: FontWeight.w500,
-              color: wasPresent ? Colors.green[700] : Colors.red[700],
+              color: statusColor,
             ),
           ),
           if (wasPresent) ...[
@@ -2660,81 +2997,5 @@ class _SliverAppBarDelegate extends SliverPersistentHeaderDelegate {
     return maxHeight != oldDelegate.maxHeight ||
         minHeight != oldDelegate.minHeight ||
         child != oldDelegate.child;
-  }
-}
-
-// Custom upload progress indicator widget
-class _UploadProgressIndicator extends StatefulWidget {
-  final FaceRecognitionProvider provider;
-
-  const _UploadProgressIndicator({required this.provider});
-
-  @override
-  _UploadProgressIndicatorState createState() =>
-      _UploadProgressIndicatorState();
-}
-
-class _UploadProgressIndicatorState extends State<_UploadProgressIndicator> {
-  double _progress = 0.0;
-  late Timer _timer;
-
-  @override
-  void initState() {
-    super.initState();
-    // Poll for progress updates frequently
-    _timer = Timer.periodic(Duration(milliseconds: 100), (_) {
-      final currentProgress = widget.provider.uploadProgress;
-      if (currentProgress != _progress) {
-        setState(() {
-          _progress = currentProgress;
-        });
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _timer.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isUploading = _progress > 0 && _progress < 1.0;
-
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        SizedBox(
-          width: 32,
-          height: 32,
-          child:
-              isUploading
-                  ? CircularProgressIndicator(
-                    strokeWidth: 3,
-                    valueColor: AlwaysStoppedAnimation<Color>(
-                      Colors.blue.shade700,
-                    ),
-                    value: _progress,
-                  )
-                  : CircularProgressIndicator(
-                    strokeWidth: 3,
-                    valueColor: AlwaysStoppedAnimation<Color>(
-                      Colors.blue.shade700,
-                    ),
-                  ),
-        ),
-        if (isUploading) ...[
-          const SizedBox(height: 8),
-          Text(
-            '${(_progress * 100).toStringAsFixed(0)}%',
-            style: GoogleFonts.poppins(
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ],
-      ],
-    );
   }
 }

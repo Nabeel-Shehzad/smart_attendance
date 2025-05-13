@@ -24,14 +24,17 @@ class AttendanceService {
     }
 
     // Check if there's already an active session for this course
-    final activeSessions = await _firestore
-        .collection('attendance_sessions')
-        .where('courseId', isEqualTo: courseId)
-        .where('isActive', isEqualTo: true)
-        .get();
+    final activeSessions =
+        await _firestore
+            .collection('attendance_sessions')
+            .where('courseId', isEqualTo: courseId)
+            .where('isActive', isEqualTo: true)
+            .get();
 
     if (activeSessions.docs.isNotEmpty) {
-      throw Exception('There is already an active attendance session for this course');
+      throw Exception(
+        'There is already an active attendance session for this course',
+      );
     }
 
     // Create attendance session document
@@ -47,8 +50,10 @@ class AttendanceService {
       'signalTime': null, // Initialize signal time as null
       'lateThresholdMinutes': lateThresholdMinutes,
       'absentThresholdMinutes': absentThresholdMinutes,
-      'wifiEnabled': true, // New field to indicate WiFi-based attendance is enabled
-      'wifiSignalActive': false, // Flag to track if WiFi signal is currently active
+      'wifiEnabled':
+          true, // New field to indicate WiFi-based attendance is enabled
+      'wifiSignalActive':
+          false, // Flag to track if WiFi signal is currently active
     });
   }
 
@@ -72,10 +77,7 @@ class AttendanceService {
 
   // End an attendance session
   Future<void> endAttendanceSession(String sessionId) async {
-    await _firestore
-        .collection('attendance_sessions')
-        .doc(sessionId)
-        .update({
+    await _firestore.collection('attendance_sessions').doc(sessionId).update({
       'isActive': false,
       'wifiSignalActive': false, // Ensure WiFi signal is also deactivated
       'updatedAt': FieldValue.serverTimestamp(),
@@ -86,26 +88,22 @@ class AttendanceService {
   Future<void> sendAttendanceSignal(String sessionId) async {
     // Record the signal time
     final now = DateTime.now();
-    await _firestore
-        .collection('attendance_sessions')
-        .doc(sessionId)
-        .update({
+    await _firestore.collection('attendance_sessions').doc(sessionId).update({
       'signalTime': Timestamp.fromDate(now),
       'wifiSignalActive': true, // Mark that WiFi signal is now active
       'updatedAt': FieldValue.serverTimestamp(),
     });
 
     // Get course ID for this session to send notifications
-    final sessionDoc = await _firestore
-        .collection('attendance_sessions')
-        .doc(sessionId)
-        .get();
+    final sessionDoc =
+        await _firestore.collection('attendance_sessions').doc(sessionId).get();
 
     if (sessionDoc.exists) {
       final sessionData = sessionDoc.data() as Map<String, dynamic>;
       final courseId = sessionData['courseId'] as String;
       final title = 'Attendance Required';
-      final message = 'Your instructor has requested attendance for ${sessionData['title']}';
+      final message =
+          'Your instructor has requested attendance for ${sessionData['title']}';
 
       // Create a notification in Firestore for fallback purposes
       await _firestore.collection('notifications').add({
@@ -127,21 +125,96 @@ class AttendanceService {
 
   // Stop attendance signal (new method for WiFi)
   Future<void> stopAttendanceSignal(String sessionId) async {
-    await _firestore
-        .collection('attendance_sessions')
-        .doc(sessionId)
-        .update({
+    await _firestore.collection('attendance_sessions').doc(sessionId).update({
       'wifiSignalActive': false,
       'updatedAt': FieldValue.serverTimestamp(),
     });
+
+    // Update attendance statuses when signal is stopped
+    await updateAttendanceStatuses(sessionId);
+  }
+
+  // Update attendance statuses based on time thresholds and include all enrolled students
+  Future<bool> updateAttendanceStatuses(String sessionId) async {
+    try {
+      // Get the session document
+      final sessionDoc =
+          await _firestore
+              .collection('attendance_sessions')
+              .doc(sessionId)
+              .get();
+
+      if (!sessionDoc.exists) {
+        return false;
+      }
+
+      final sessionData = sessionDoc.data() as Map<String, dynamic>;
+      final signalTime =
+          sessionData['signalTime'] != null
+              ? (sessionData['signalTime'] as Timestamp).toDate()
+              : null;
+
+      // If no signal time is set, we can't update statuses
+      if (signalTime == null) {
+        return false;
+      }
+
+      // Session data is used for signal time and thresholds
+
+      // Get the late and absent thresholds
+      final lateThresholdMinutes = sessionData['lateThresholdMinutes'] ?? 15;
+      final absentThresholdMinutes =
+          sessionData['absentThresholdMinutes'] ?? 30;
+
+      // Get the current attendees
+      final attendees = List<Map<String, dynamic>>.from(
+        sessionData['attendees'] ?? [],
+      );
+
+      // Update status for students who have marked attendance
+      final updatedAttendees =
+          attendees.map((attendee) {
+            // Get the marked time for this attendee
+            final markedAt = (attendee['markedAt'] as Timestamp).toDate();
+            final responseTime = markedAt.difference(signalTime);
+
+            // Determine the correct status based on response time
+            String status = 'present';
+            if (responseTime.inMinutes > absentThresholdMinutes) {
+              status = 'absent';
+            } else if (responseTime.inMinutes > lateThresholdMinutes) {
+              status = 'late';
+            }
+
+            // Update the status if it's different
+            if (attendee['status'] != status) {
+              attendee['status'] = status;
+              attendee['statusUpdatedAt'] = Timestamp.now();
+            }
+
+            return attendee;
+          }).toList();
+
+      // Only update the existing attendees, don't auto-mark absent students
+      await _firestore
+          .collection('attendance_sessions')
+          .doc(sessionId)
+          .update({
+        'attendees': updatedAttendees,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      return true;
+    } catch (e) {
+      print('Error updating attendance statuses: $e');
+      return false;
+    }
   }
 
   // Check if a WiFi signal is active for a session
   Future<bool> isSessionSignalActive(String sessionId) async {
-    final doc = await _firestore
-        .collection('attendance_sessions')
-        .doc(sessionId)
-        .get();
+    final doc =
+        await _firestore.collection('attendance_sessions').doc(sessionId).get();
 
     if (!doc.exists) return false;
 
@@ -163,10 +236,12 @@ class AttendanceService {
     if (validStudentName.isEmpty || validStudentName == 'Unknown Student') {
       try {
         // Attempt to fetch student name from users collection
-        final userDoc = await _firestore.collection('users').doc(studentId).get();
+        final userDoc =
+            await _firestore.collection('users').doc(studentId).get();
         if (userDoc.exists && userDoc.data() != null) {
           final userData = userDoc.data()!;
-          if (userData.containsKey('fullName') && userData['fullName'] != null) {
+          if (userData.containsKey('fullName') &&
+              userData['fullName'] != null) {
             validStudentName = userData['fullName'];
           }
         }
@@ -175,12 +250,10 @@ class AttendanceService {
         // Continue with the provided name if there's an error
       }
     }
-    
+
     // Check if the session is active
-    final sessionDoc = await _firestore
-        .collection('attendance_sessions')
-        .doc(sessionId)
-        .get();
+    final sessionDoc =
+        await _firestore.collection('attendance_sessions').doc(sessionId).get();
 
     if (!sessionDoc.exists) {
       throw Exception('Attendance session not found');
@@ -198,8 +271,12 @@ class AttendanceService {
     }
 
     // Check if the student is already marked
-    final attendees = List<Map<String, dynamic>>.from(sessionData['attendees'] ?? []);
-    final alreadyMarked = attendees.any((attendee) => attendee['studentId'] == studentId);
+    final attendees = List<Map<String, dynamic>>.from(
+      sessionData['attendees'] ?? [],
+    );
+    final alreadyMarked = attendees.any(
+      (attendee) => attendee['studentId'] == studentId,
+    );
 
     if (alreadyMarked) {
       throw Exception('Student attendance already marked');
@@ -211,9 +288,10 @@ class AttendanceService {
 
     // Determine attendance status based on signal time
     String status = 'present';
-    final signalTime = sessionData['signalTime'] != null
-        ? (sessionData['signalTime'] as Timestamp).toDate()
-        : null;
+    final signalTime =
+        sessionData['signalTime'] != null
+            ? (sessionData['signalTime'] as Timestamp).toDate()
+            : null;
 
     if (signalTime != null) {
       final now = DateTime.now();
@@ -228,10 +306,7 @@ class AttendanceService {
     }
 
     // Mark attendance
-    await _firestore
-        .collection('attendance_sessions')
-        .doc(sessionId)
-        .update({
+    await _firestore.collection('attendance_sessions').doc(sessionId).update({
       'attendees': FieldValue.arrayUnion([
         {
           'studentId': studentId,
@@ -242,7 +317,7 @@ class AttendanceService {
           'wifiVerified': wifiVerified, // Include WiFi verification status
           'status': status, // Add attendance status
           'responseTime': Timestamp.now(),
-        }
+        },
       ]),
       'updatedAt': FieldValue.serverTimestamp(),
     });
@@ -264,10 +339,7 @@ class AttendanceService {
 
   // Mark notification as read
   Future<void> markNotificationAsRead(String notificationId) async {
-    await _firestore
-        .collection('notifications')
-        .doc(notificationId)
-        .update({
+    await _firestore.collection('notifications').doc(notificationId).update({
       'read': true,
     });
   }

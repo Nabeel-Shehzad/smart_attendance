@@ -96,18 +96,32 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
       
       if (!mounted) return;
 
+      // Debug: Print user role to see what's coming from Firebase
+      print('DEBUG: User role after login: $userRole');
+      
       // Navigate based on user role using pushAndRemoveUntil to clear the stack
       if (userRole == 'instructor') {
+        print('DEBUG: Navigating to instructor dashboard');
         Navigator.pushNamedAndRemoveUntil(
           context,
           '/instructor/dashboard',
           (route) => false,
         );
       } else if (userRole == 'student') {
+        print('DEBUG: Navigating to student dashboard');
         Navigator.pushNamedAndRemoveUntil(
           context,
           '/student/dashboard',
           (route) => false,
+        );
+      } else {
+        // If role is not recognized, show an error
+        print('DEBUG: Unknown user role: $userRole');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: Unknown user role "$userRole"'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     } catch (e) {

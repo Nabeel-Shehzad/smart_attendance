@@ -552,7 +552,7 @@ class WifiProvider with ChangeNotifier {
             
             await FirebaseFirestore.instance
                 .collection('attendance_signals')
-                .doc(sessionId)
+                .doc(signalId)
                 .update({
                   'updatedAt': FieldValue.serverTimestamp(),
                   'wifiName': currentWifiName,

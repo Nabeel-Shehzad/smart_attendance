@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
@@ -5,7 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../providers/attendance_provider.dart';
 import '../../providers/wifi_provider.dart' as wifi_provider;
-import '../../providers/auth_provider.dart'; 
+import '../../providers/auth_provider.dart';
 import '../../models/attendance_session.dart';
 import '../../widgets/student_attendance_item.dart';
 
@@ -29,11 +30,26 @@ class AttendanceSessionDetailPage extends StatefulWidget {
 class _AttendanceSessionDetailPageState
     extends State<AttendanceSessionDetailPage> {
   bool _isBroadcasting = false;
+  Timer? _statusUpdateTimer;
 
   @override
   void initState() {
     super.initState();
     _checkWifiSignalStatus();
+
+    // Update attendance statuses immediately when page loads
+    _updateAttendanceStatuses();
+
+    // Set up a timer to periodically update attendance statuses
+    _statusUpdateTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      _updateAttendanceStatuses();
+    });
+  }
+
+  @override
+  void dispose() {
+    _statusUpdateTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _checkWifiSignalStatus() async {
@@ -49,6 +65,34 @@ class _AttendanceSessionDetailPageState
       setState(() {
         _isBroadcasting = isActive;
       });
+    }
+  }
+
+  // Update attendance statuses based on time thresholds
+  Future<void> _updateAttendanceStatuses() async {
+    try {
+      final attendanceProvider = Provider.of<AttendanceProvider>(
+        context,
+        listen: false,
+      );
+
+      // Only update statuses if the session is active
+      final sessionSnapshot =
+          await FirebaseFirestore.instance
+              .collection('attendance_sessions')
+              .doc(widget.sessionId)
+              .get();
+
+      if (!sessionSnapshot.exists) return;
+
+      final sessionData = sessionSnapshot.data() as Map<String, dynamic>;
+      final isActive = sessionData['isActive'] ?? false;
+
+      if (isActive) {
+        await attendanceProvider.updateAttendanceStatuses(widget.sessionId);
+      }
+    } catch (e) {
+      print('Error updating attendance statuses: $e');
     }
   }
 
@@ -257,7 +301,7 @@ class _AttendanceSessionDetailPageState
                             const Spacer(),
                             if (_isBroadcasting)
                               Container(
-                                 padding: const EdgeInsets.symmetric(
+                                padding: const EdgeInsets.symmetric(
                                   horizontal: 8,
                                   vertical: 4,
                                 ),
@@ -331,7 +375,10 @@ class _AttendanceSessionDetailPageState
                               Expanded(
                                 child: ElevatedButton.icon(
                                   onPressed:
-                                      wifiProvider.status == wifi_provider.WifiConnectionStatus.error
+                                      wifiProvider.status ==
+                                              wifi_provider
+                                                  .WifiConnectionStatus
+                                                  .error
                                           ? null
                                           : (_isBroadcasting
                                               ? _stopBroadcasting
@@ -478,7 +525,8 @@ class _AttendanceSessionDetailPageState
                             ],
                           ),
                         ),
-                        if (wifiProvider.status == wifi_provider.WifiConnectionStatus.error)
+                        if (wifiProvider.status ==
+                            wifi_provider.WifiConnectionStatus.error)
                           Padding(
                             padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                             child: Container(
@@ -584,49 +632,49 @@ class _AttendanceSessionDetailPageState
                   ),
                 ),
                 attendees.isEmpty
-                  ? Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.person_off_rounded,
-                          size: 56,
-                          color: Colors.grey[400],
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'No Students Present',
-                          style: GoogleFonts.poppins(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.grey[800],
+                    ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.person_off_rounded,
+                            size: 56,
+                            color: Colors.grey[400],
                           ),
-                        ),
-                        if (isActive) ...[
-                          const SizedBox(height: 8),
+                          const SizedBox(height: 16),
                           Text(
-                            _isBroadcasting
-                                ? 'WiFi signal is active. Waiting for students on the same network to mark attendance.'
-                                : 'Tap "Send Signal" to enable attendance marking for students on the same WiFi network',
+                            'No Students Present',
                             style: GoogleFonts.poppins(
-                              fontSize: 14,
-                              color: Colors.grey[600],
+                              fontSize: 18,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.grey[800],
                             ),
-                            textAlign: TextAlign.center,
                           ),
+                          if (isActive) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              _isBroadcasting
+                                  ? 'WiFi signal is active. Waiting for students on the same network to mark attendance.'
+                                  : 'Tap "Send Signal" to enable attendance marking for students on the same WiFi network',
+                              style: GoogleFonts.poppins(
+                                fontSize: 14,
+                                color: Colors.grey[600],
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
                         ],
-                      ],
+                      ),
+                    )
+                    : ListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: attendees.length,
+                      itemBuilder: (context, index) {
+                        final attendee = attendees[index];
+                        return StudentAttendanceItem(attendee: attendee);
+                      },
                     ),
-                  )
-                  : ListView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    itemCount: attendees.length,
-                    itemBuilder: (context, index) {
-                      final attendee = attendees[index];
-                      return StudentAttendanceItem(attendee: attendee);
-                    },
-                  ),
               ],
             ),
           );
@@ -640,7 +688,10 @@ class _AttendanceSessionDetailPageState
       context,
       listen: false,
     );
-    final wifiProvider = Provider.of<wifi_provider.WifiProvider>(context, listen: false);
+    final wifiProvider = Provider.of<wifi_provider.WifiProvider>(
+      context,
+      listen: false,
+    );
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
 
     // First check permissions
@@ -665,9 +716,7 @@ class _AttendanceSessionDetailPageState
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const Center(
-        child: CircularProgressIndicator(),
-      ),
+      builder: (context) => const Center(child: CircularProgressIndicator()),
     );
 
     // Check and reset WiFi state before attempting to broadcast
@@ -676,7 +725,7 @@ class _AttendanceSessionDetailPageState
       // Close loading indicator
       if (context.mounted) {
         Navigator.of(context).pop();
-        
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -690,16 +739,18 @@ class _AttendanceSessionDetailPageState
       }
       return;
     }
-    
+
     // Proceed with starting the attendance signal
     // First send the attendance signal through the attendance provider
-    final signalSuccess = await attendanceProvider.sendAttendanceSignal(widget.sessionId);
-    
+    final signalSuccess = await attendanceProvider.sendAttendanceSignal(
+      widget.sessionId,
+    );
+
     if (!signalSuccess) {
       // Close loading indicator if still showing
       if (context.mounted) {
         Navigator.of(context).pop();
-        
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -713,7 +764,7 @@ class _AttendanceSessionDetailPageState
       }
       return;
     }
-    
+
     // Then broadcast the WiFi signal
     final success = await wifiProvider.broadcastAttendanceSignal(
       sessionId: widget.sessionId,
@@ -767,7 +818,10 @@ class _AttendanceSessionDetailPageState
       context,
       listen: false,
     );
-    final wifiProvider = Provider.of<wifi_provider.WifiProvider>(context, listen: false);
+    final wifiProvider = Provider.of<wifi_provider.WifiProvider>(
+      context,
+      listen: false,
+    );
 
     await wifiProvider.stopBroadcasting();
 

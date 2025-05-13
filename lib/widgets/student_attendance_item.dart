@@ -18,6 +18,7 @@ class StudentAttendanceItem extends StatelessWidget {
     final markedAt = (attendee['markedAt'] as Timestamp).toDate();
     final verificationMethod = attendee['verificationMethod'] ?? 'Manual';
     final wifiVerified = attendee['wifiVerified'] ?? false;
+    final status = attendee['status'] ?? 'present';
     
     return FutureBuilder<DocumentSnapshot>(
       future: (attendee['studentName'] == null || 
@@ -144,7 +145,7 @@ class StudentAttendanceItem extends StatelessWidget {
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Text(
-                        verificationMethod,
+                        attendee['autoMarked'] == true ? 'Not Marked' : verificationMethod,
                         style: GoogleFonts.poppins(
                           fontSize: 12,
                           color: theme.primaryColor,
@@ -185,21 +186,76 @@ class StudentAttendanceItem extends StatelessWidget {
                 ),
               ],
             ),
-            trailing: Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.green.shade50,
-                shape: BoxShape.circle,
-              ),
-              child: Icon(
-                Icons.check,
-                color: Colors.green.shade600,
-                size: 16,
-              ),
-            ),
+            trailing: _buildStatusIndicator(status, theme),
           ),
         );
       },
+    );
+  }
+  
+  // Build a visual indicator for the attendance status
+  Widget _buildStatusIndicator(String status, ThemeData theme) {
+    // Define colors and icons based on status
+    Color backgroundColor;
+    Color iconColor;
+    IconData iconData;
+    String statusText;
+    
+    // Check if this was auto-marked by the system
+    final autoMarked = attendee['autoMarked'] ?? false;
+    
+    switch (status.toLowerCase()) {
+      case 'present':
+        backgroundColor = Colors.green.shade50;
+        iconColor = Colors.green.shade600;
+        iconData = Icons.check_circle;
+        statusText = 'Present';
+        break;
+      case 'late':
+        backgroundColor = Colors.orange.shade50;
+        iconColor = Colors.orange.shade600;
+        iconData = Icons.timer;
+        statusText = 'Late';
+        break;
+      case 'absent':
+        backgroundColor = Colors.red.shade50;
+        iconColor = Colors.red.shade600;
+        iconData = autoMarked ? Icons.person_off : Icons.cancel;
+        statusText = 'Absent';
+        break;
+      default:
+        backgroundColor = Colors.green.shade50;
+        iconColor = Colors.green.shade600;
+        iconData = Icons.check_circle;
+        statusText = 'Present';
+    }
+    
+    // Return a column with icon and status text
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: backgroundColor,
+            shape: BoxShape.circle,
+          ),
+          child: Icon(
+            iconData,
+            color: iconColor,
+            size: 16,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          statusText,
+          style: GoogleFonts.poppins(
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+            color: iconColor,
+          ),
+        ),
+      ],
     );
   }
 }
